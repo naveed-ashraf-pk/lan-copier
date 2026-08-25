@@ -2,7 +2,7 @@
 connect either side.
 
 A clean dialog for choosing *what* a source/destination points at:
-  - "This computer"  → local folder (SSH fields dimmed)
+  - "This computer"  → local folder (SSH fields hidden)
   - a saved profile  → prefilled SSH endpoint
   - "+ New…"         → blank SSH endpoint (host, port, user, password, remember,
                        save-as name) with live LAN discovery
@@ -25,7 +25,7 @@ from gi.repository import Gtk
 
 import app.profiles as profiles
 
-NEW_ROW = "+ New connection…"
+NEW_ROW = "+ New connection\u2026"
 
 RESP_DISCONNECT = 2
 
@@ -36,22 +36,28 @@ class ConnectionDialog(Gtk.Dialog):
         super().__init__(title=title, transient_for=parent, modal=True,
                          destroy_with_parent=True)
         initial = initial or {}
-        self.set_default_size(480, -1)
+        self.set_default_size(500, -1)
         self._on_discover = None
         self._profiles = profiles_data or {}
         self._holding = False
         self._fields = {}          # combo kind -> {"host","port","user",...}
-        self._ssh_boxes = []
         self._kind = None
         self._initial_mode = mode
         self._build(hosts, initial, name, connected)
 
+    # -- layout --------------------------------------------------------------
+
     def _build(self, hosts, initial, name, connected):
         box = self.get_content_area()
-        box.set_spacing(4)
-        grid = Gtk.Grid(column_spacing=14, row_spacing=10)
+        box.set_spacing(0)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        box.set_margin_top(12)
+        box.set_margin_bottom(8)
 
-        grid.attach(self._lbl("Connection"), 0, 0, 1, 1)
+        row0 = Gtk.Box(spacing=8)
+        row0.set_margin_bottom(10)
+        row0.pack_start(self._lbl("Connection"), False, False, 0)
         self.kind = Gtk.ComboBoxText()
         self.kind.append_text(profiles.THIS)            # index 0
         for pname in self._profiles:
@@ -59,93 +65,148 @@ class ConnectionDialog(Gtk.Dialog):
         if name is None:
             self.kind.append_text(NEW_ROW)
         self.kind.connect("changed", self._on_kind_changed)
-        grid.attach(self.kind, 1, 0, 1, 1)
+        row0.pack_start(self.kind, True, True, 0)
+        box.pack_start(row0, False, False, 0)
 
-        grid.attach(self._lbl("Host"), 0, 1, 1, 1)
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.SLIDE_UP_DOWN)
+        self.stack.set_transition_duration(150)
+
+        # --- "This computer" page -------------------------------------------
+        local_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        local_box.set_margin_top(12)
+        local_box.set_margin_bottom(12)
+        local_box.set_margin_start(4)
+        local_box.set_margin_end(4)
+        local_info = Gtk.Label(
+            xalign=0, wrap=True,
+            label="This side will browse local folders.\n"
+                  "Click Connect to pick a directory.",
+        )
+        local_info.get_style_context().add_class("dim-label")
+        local_box.pack_start(local_info, False, False, 0)
+        hint = Gtk.Label(
+            xalign=0, wrap=True,
+            label="<small>Tip: use the <b>Connection</b> dropdown above to "
+                  "switch to <i>+ New connection\u2026</i> for an SSH endpoint "
+                  "or select a saved profile.</small>",
+        )
+        hint.set_use_markup(True)
+        hint.get_style_context().add_class("dim-label")
+        local_box.pack_start(hint, False, False, 0)
+        self.stack.add_named(local_box, "local")
+
+        # --- SSH page -------------------------------------------------------
+        ssh_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        ssh_outer.set_margin_top(4)
+        ssh_outer.set_margin_bottom(4)
+
+        frame = Gtk.Frame()
+        frame.set_shadow_type(Gtk.ShadowType.ETCHED_IN)
+        ssh_grid = Gtk.Grid(column_spacing=12, row_spacing=8)
+        ssh_grid.set_margin_start(10)
+        ssh_grid.set_margin_end(10)
+        ssh_grid.set_margin_top(10)
+        ssh_grid.set_margin_bottom(10)
+
+        ssh_grid.attach(self._lbl("Host"), 0, 0, 1, 1)
         host_box = Gtk.Box(spacing=4)
         self.host = Gtk.ComboBoxText.new_with_entry()
         self.host.set_entry_text_column(0)
         for h in hosts:
             if h:
                 self.host.append_text(str(h))
-        self.host.get_child().set_placeholder_text("host or IP")
-        self.host.get_child().set_width_chars(26)
+        self.host.get_child().set_placeholder_text("hostname or IP")
+        self.host.get_child().set_width_chars(24)
         self.host.set_tooltip_text(
             "SSH host or IP. Discovered hosts appear in the dropdown.")
         host_box.pack_start(self.host, True, True, 0)
-        self.discover = Gtk.Button(label="↻")
+        self.discover = Gtk.Button(label="\u21bb")
         self.discover.set_tooltip_text("Rescan the LAN for SSH hosts")
         self.discover.connect("clicked", self._discover_clicked)
         host_box.pack_start(self.discover, False, False, 0)
-        grid.attach(host_box, 1, 1, 1, 1)
-        self._ssh_boxes.append(host_box)
+        ssh_grid.attach(host_box, 1, 0, 1, 1)
 
-        grid.attach(self._lbl("Port"), 0, 2, 1, 1)
+        ssh_grid.attach(self._lbl("Port"), 0, 1, 1, 1)
         self.port = Gtk.SpinButton.new_with_range(1, 65535, 1)
         self.port.set_value(22)
         self.port.set_tooltip_text("SSH port (default 22)")
-        grid.attach(self.port, 1, 2, 1, 1)
-        self._ssh_boxes.append(grid)
+        ssh_grid.attach(self.port, 1, 1, 1, 1)
 
-        grid.attach(self._lbl("User"), 0, 3, 1, 1)
+        ssh_grid.attach(self._lbl("User"), 0, 2, 1, 1)
         self.user = Gtk.Entry()
         self.user.set_placeholder_text("username")
-        self.user.set_width_chars(26)
+        self.user.set_width_chars(24)
         self.user.set_tooltip_text("SSH account username on the remote host")
-        grid.attach(self.user, 1, 3, 1, 1)
-        self._ssh_boxes.append(grid)
+        ssh_grid.attach(self.user, 1, 2, 1, 1)
 
-        grid.attach(self._lbl("Password"), 0, 4, 1, 1)
+        ssh_grid.attach(self._lbl("Password"), 0, 3, 1, 1)
         pw_box = Gtk.Box(spacing=4)
         self.password = Gtk.Entry()
         self.password.set_visibility(False)
         self.password.set_width_chars(20)
+        self.password.set_hexpand(True)
         pw_box.pack_start(self.password, True, True, 0)
-        self.reveal = Gtk.CheckButton(label="Show")
-        self.reveal.connect("toggled",
-                            lambda b: self.password.set_visibility(b.get_active()))
+        self.reveal = Gtk.ToggleButton(label="\U0001f441")
+        self.reveal.set_tooltip_text("Show / hide password")
+        self.reveal.set_relief(Gtk.ReliefStyle.NONE)
+        self.reveal.connect(
+            "toggled",
+            lambda b: self.password.set_visibility(b.get_active()))
         pw_box.pack_start(self.reveal, False, False, 0)
-        grid.attach(pw_box, 1, 4, 1, 1)
-        self._ssh_boxes.append(pw_box)
+        ssh_grid.attach(pw_box, 1, 3, 1, 1)
 
         if initial.get("password"):
             self.password.set_text(str(initial["password"]))
-            self.remember = Gtk.CheckButton(label="Update saved password on this computer")
+            self.remember = Gtk.CheckButton(
+                label="Update saved password on this computer")
         else:
-            self.remember = Gtk.CheckButton(label="Remember password on this computer")
+            self.remember = Gtk.CheckButton(
+                label="Remember password on this computer")
         self.remember.set_tooltip_text(
             "Store the password in the local profile (plaintext). Unchecked "
             "connections are never persisted beyond the session.")
         self.remember.set_active(bool(initial.get("remember")))
         note = Gtk.Label(label="(plaintext on disk)", xalign=0)
         note.get_style_context().add_class("dim-label")
-        row = Gtk.Box(spacing=4)
-        row.pack_start(self.remember, False, False, 0)
-        row.pack_start(note, False, False, 0)
-        grid.attach(row, 1, 5, 1, 1)
-        self._ssh_boxes.append(row)
+        rem_box = Gtk.Box(spacing=6)
+        rem_box.set_margin_top(2)
+        rem_box.pack_start(self.remember, False, False, 0)
+        rem_box.pack_start(note, False, False, 0)
+        ssh_grid.attach(rem_box, 1, 4, 1, 1)
 
-        grid.attach(self._lbl("Save as"), 0, 6, 1, 1)
+        ssh_grid.attach(self._lbl("Save as"), 0, 5, 1, 1)
         self.name = Gtk.Entry()
-        self.name.set_width_chars(26)
+        self.name.set_width_chars(24)
         prefill = name or f"{initial.get('user', '')}@{initial.get('host', '')}"
         self.name.set_text(str(initial.get("name", "")) or prefill)
         self.name.set_tooltip_text(
             "Profile name. The connection is saved under this name for the "
             "current side after it connects successfully.")
-        grid.attach(self.name, 1, 6, 1, 1)
-        self._ssh_boxes.append(grid)
+        ssh_grid.attach(self.name, 1, 5, 1, 1)
 
-        box.pack_start(grid, True, True, 0)
-        note = Gtk.Label(label="The connection is saved automatically when it connects.",
-                         xalign=0)
-        note.get_style_context().add_class("dim-label")
-        box.pack_start(note, False, False, 0)
+        frame.set_label("SSH Connection")
+        frame.add(ssh_grid)
+        ssh_outer.pack_start(frame, True, True, 0)
 
+        hint = Gtk.Label(
+            xalign=0, wrap=True,
+            label="The connection is saved automatically when it connects.",
+        )
+        hint.get_style_context().add_class("dim-label")
+        ssh_outer.pack_start(hint, False, False, 0)
+
+        self.stack.add_named(ssh_outer, "ssh")
+
+        box.pack_start(self.stack, True, True, 0)
+
+        # -- buttons ---------------------------------------------------------
         self.add_button("Cancel", Gtk.ResponseType.CANCEL)
         if connected:
-            self.add_button("Disconnect", RESP_DISCONNECT)
-        self.add_button("Connect", Gtk.ResponseType.OK)
+            disconnect_btn = self.add_button("Disconnect", RESP_DISCONNECT)
+            disconnect_btn.get_style_context().add_class("destructive-action")
+        connect_btn = self.add_button("Connect", Gtk.ResponseType.OK)
+        connect_btn.get_style_context().add_class("suggested-action")
         self.set_default_response(Gtk.ResponseType.OK)
 
         # Select the row matching the current/requested state, then apply it.
@@ -176,7 +237,7 @@ class ConnectionDialog(Gtk.Dialog):
             self._set_kind_active(NEW_ROW)
             return
         self._append_new_row()
-        self._set_kind_active(NEW_ROW)
+        self._set_kind_active(profiles.THIS)
 
     def _append_new_row(self):
         cur = [self.kind.get_model()[i][0] for i in range(len(self.kind.get_model()))]
@@ -212,12 +273,8 @@ class ConnectionDialog(Gtk.Dialog):
             f = self._fields.get(kind) or self._profiles.get(kind) or {}
         self._set_fields(f)
         if not local and kind != NEW_ROW and not self.name.get_text():
-            # A saved profile has no stored name; default the Save-as row to it.
             self.name.set_text(kind)
-        for w in self._ssh_boxes:
-            w.set_sensitive(not local)
-        self.host.set_sensitive(not local)
-        self.discover.set_sensitive(not local)
+        self.stack.set_visible_child_name("local" if local else "ssh")
         if local:
             self.name.set_text(profiles.THIS)
 
@@ -254,7 +311,7 @@ class ConnectionDialog(Gtk.Dialog):
             self._on_discover(self)
 
     def set_on_discover(self, fn):
-        """fn(dialog) — ask the window to scan the LAN and call set_hosts."""
+        """fn(dialog) \u2014 ask the window to scan the LAN and call set_hosts."""
         self._on_discover = fn or (lambda *a: None)
 
     def set_hosts(self, hosts):

@@ -256,7 +256,11 @@ def test_connection_dialog_collect_modes():
     dlg = ConnectionDialog(win, "Connect Source",
                            profiles_data={"bob@srv": profile})
     try:
-        # default: + New… selected
+        # default: This computer selected (fresh dialog with no prior state)
+        assert dlg._kind == profiles.THIS
+        assert dlg.collect() == {"mode": "local"}
+        # switch to + New… and fill SSH fields
+        dlg._set_kind_active(NEW_ROW)
         assert dlg._kind == NEW_ROW
         dlg.host.get_child().set_text("newhost")
         dlg.user.set_text("alice")
@@ -264,7 +268,7 @@ def test_connection_dialog_collect_modes():
         assert dlg.collect() == {"mode": "ssh", "params": {
             "host": "newhost", "port": 22, "user": "alice",
             "password": "", "remember": False, "name": "alice@newhost"}}
-        # switch to This computer
+        # switch back to This computer
         dlg._set_kind_active(profiles.THIS)
         assert dlg.collect() == {"mode": "local"}
         # switch to a saved profile → prefilled, name defaults to profile

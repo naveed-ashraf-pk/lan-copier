@@ -39,15 +39,19 @@ def list_dir(path):
                 except OSError:
                     continue
                 is_link = e.is_symlink()
-                items.append({
-                    "name": e.name,
-                    "is_dir": not is_link and e.is_dir(),
-                    "is_link": is_link,
-                    "size": 0 if e.is_dir() and not is_link else st.st_size,
-                    "mtime": time.strftime("%b %d %H:%M", time.localtime(st.st_mtime)),
-                    "mtime_epoch": int(st.st_mtime),
-                    "path": os.path.join(path, e.name),
-                })
+                items.append(
+                    {
+                        "name": e.name,
+                        "is_dir": not is_link and e.is_dir(),
+                        "is_link": is_link,
+                        "size": 0 if e.is_dir() and not is_link else st.st_size,
+                        "mtime": time.strftime(
+                            "%b %d %H:%M", time.localtime(st.st_mtime)
+                        ),
+                        "mtime_epoch": int(st.st_mtime),
+                        "path": os.path.join(path, e.name),
+                    }
+                )
         return items
     except OSError:
         return None
@@ -133,6 +137,16 @@ def size_of(path):
     """Recursive byte total for a local path, or None when inaccessible."""
     st = stat_bytes_files(path)
     return st["bytes"] if st else None
+
+
+def disk_space(path):
+    """{'total': bytes, 'free': bytes} for the filesystem containing a local
+    path, or None when inaccessible."""
+    try:
+        usage = shutil.disk_usage(os.path.expanduser(path))
+    except OSError:
+        return None
+    return {"total": usage.total, "free": usage.free}
 
 
 def unique_path(p):

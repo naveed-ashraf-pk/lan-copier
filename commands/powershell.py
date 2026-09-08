@@ -30,8 +30,9 @@ def _script(body):
 
 
 def exists(path):
-    body = ("if (Test-Path -LiteralPath '" + _ps_str(path)
-            + "') { exit 0 } else { exit 1 }")
+    body = (
+        "if (Test-Path -LiteralPath '" + _ps_str(path) + "') { exit 0 } else { exit 1 }"
+    )
     return _script(body)
 
 
@@ -45,10 +46,12 @@ def list_dir(path):
         "  if (($it.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { $isLink = 1 }\n"
         "  elseif ($it.PSIsContainer) { $isDir = 1 }\n"
         "  $epoch = [DateTimeOffset]::new($it.LastWriteTime).ToUnixTimeSeconds()\n"
-        "  [Console]::Out.WriteLine(\"$isDir`t$isLink`t$($it.Length)`t$epoch`t$($it.Name)\")\n"
+        '  [Console]::Out.WriteLine("$isDir`t$isLink`t$($it.Length)`t$epoch`t$($it.Name)")\n'
         "}\n"
         "try {\n"
-        "  Get-ChildItem -LiteralPath '" + _ps_str(path) + "' -Force | ForEach-Object { Emit $_ }\n"
+        "  Get-ChildItem -LiteralPath '"
+        + _ps_str(path)
+        + "' -Force | ForEach-Object { Emit $_ }\n"
         "} catch {\n"
         "  [Console]::Error.WriteLine($_.Exception.Message)\n"
         "  exit 1\n"
@@ -64,12 +67,27 @@ def stat_bytes_files(path):
         "if (Test-Path -LiteralPath $p -PathType Container) {\n"
         "  $r = @(Get-ChildItem -LiteralPath $p -Recurse -File -Force -ErrorAction SilentlyContinue)\n"
         "  $b = 0; foreach ($f in $r) { $b += $f.Length }\n"
-        "  [Console]::Out.WriteLine(\"$b $($r.Count)\")\n"
+        '  [Console]::Out.WriteLine("$b $($r.Count)")\n'
         "} else {\n"
         "  $it = Get-Item -LiteralPath $p -ErrorAction SilentlyContinue\n"
         "  if ($null -eq $it) { exit 0 }\n"
-        "  [Console]::Out.WriteLine(\"$($it.Length) 1\")\n"
+        '  [Console]::Out.WriteLine("$($it.Length) 1")\n'
         "}"
+    )
+    return _script(body)
+
+
+def disk_space(path):
+    """Print `TOTAL FREE` (bytes) for the filesystem holding <path>, exit 1 on
+    an unresolvable path or a drive without a resolvable root (UNC/mapped)."""
+    body = (
+        "$p = Resolve-Path -LiteralPath '"
+        + _ps_str(path)
+        + "' -ErrorAction SilentlyContinue\n"
+        "if ($null -eq $p -or $null -eq $p.Drive) { exit 1 }\n"
+        "$d = [IO.DriveInfo]::new($p.Drive.Root)\n"
+        "if (-not $d.IsReady) { exit 1 }\n"
+        '[Console]::Out.WriteLine("$($d.TotalSize) $($d.AvailableFreeSpace)")'
     )
     return _script(body)
 
@@ -79,11 +97,12 @@ def tree(root):
     relative to root. Empty folders and reparse-point links are not listed."""
     body = (
         "$base = '" + _ps_str(root) + "'.Replace('\\', '/').TrimEnd('/')\n"
-        "Get-ChildItem -LiteralPath '" + _ps_str(root)
+        "Get-ChildItem -LiteralPath '"
+        + _ps_str(root)
         + "' -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {\n"
         "  $f = $_.FullName.Replace('\\', '/')\n"
         "  if ($f.StartsWith($base + '/')) { $f = $f.Substring($base.Length + 1) }\n"
-        "  [Console]::Out.WriteLine(\"$f`t$($_.Length)\")\n"
+        '  [Console]::Out.WriteLine("$f`t$($_.Length)")\n'
         "}"
     )
     return _script(body)
@@ -109,16 +128,22 @@ def delete_recurse(path):
 
 
 def mkdir_p(path):
-    body = ("New-Item -ItemType Directory -Path '" + _ps_str(path)
-            + "' -Force | Out-Null")
+    body = (
+        "New-Item -ItemType Directory -Path '" + _ps_str(path) + "' -Force | Out-Null"
+    )
     return _script(body)
 
 
 def rename(src, dst):
     """Move/rename a path; kept as a plain cmdlet (throw/fail leaves the
     destination untouched, which is what the move fast-path fallback needs)."""
-    body = ("Move-Item -LiteralPath '" + _ps_str(src) + "' -Destination '"
-            + _ps_str(dst) + "' -Force -ErrorAction Stop")
+    body = (
+        "Move-Item -LiteralPath '"
+        + _ps_str(src)
+        + "' -Destination '"
+        + _ps_str(dst)
+        + "' -Force -ErrorAction Stop"
+    )
     return _script(body)
 
 
@@ -148,7 +173,9 @@ def hostname():
 
 
 def has_tar():
-    return _script("if (Get-Command tar.exe -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }")
+    return _script(
+        "if (Get-Command tar.exe -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
+    )
 
 
 def tar_read(parent, name):
@@ -162,10 +189,7 @@ def tar_read(parent, name):
 
 def tar_extract(part):
     """Stream-extract a plain tar archive from stdin into an existing <part>."""
-    body = (
-        "tar.exe -C '" + _ps_str(part) + "' -xpf -\n"
-        "exit $LASTEXITCODE"
-    )
+    body = "tar.exe -C '" + _ps_str(part) + "' -xpf -\nexit $LASTEXITCODE"
     return _script(body)
 
 

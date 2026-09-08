@@ -50,14 +50,30 @@ def ls_la(path):
 
 def find_stat_gnu(path):
     """Print '<bytes> <files>' using GNU find; `-printf` needs GNU findutils."""
-    return (f"find {q(path)} -type f -printf '%s\\n' 2>/dev/null | "
-            f"awk '{{s+=$1; n++}} END {{print s+0, n+0}}'")
+    return (
+        f"find {q(path)} -type f -printf '%s\\n' 2>/dev/null | "
+        f"awk '{{s+=$1; n++}} END {{print s+0, n+0}}'"
+    )
 
 
 def find_stat_darwin(path):
     """Print '<bytes> <files>' using BSD find + stat (macOS native)."""
-    return (f"find {q(path)} -type f -exec stat -f '%z' {{}} + 2>/dev/null | "
-            f"awk '{{s+=$1; n++}} END {{print s+0, n+0}}'")
+    return (
+        f"find {q(path)} -type f -exec stat -f '%z' {{}} + 2>/dev/null | "
+        f"awk '{{s+=$1; n++}} END {{print s+0, n+0}}'"
+    )
+
+
+def df_gnu(path):
+    """Print 'SIZE AVAIL' in bytes for the filesystem holding <path> (GNU df
+    with -B1 --output; the header line is skipped by the caller)."""
+    return f"df -B1 --output=size,used,avail -- {q(path)}"
+
+
+def df_darwin(path):
+    """Print the df -k line for the filesystem holding <path> (macOS BSD df:
+    columns filesystem, 1024-blocks, used, available...; caller scales KB)."""
+    return f"df -k -- {q(path)}"
 
 
 def find_tree_gnu(path):

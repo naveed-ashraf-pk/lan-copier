@@ -1,4 +1,5 @@
 """Tests for the pure command builders (commands/ package)."""
+
 import glob
 import io
 import json
@@ -17,7 +18,11 @@ import base64
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ssh_transport import (
-    SSHConnection, POLICY_ASK, POLICY_OVERWRITE, POLICY_KEEP_BOTH, POLICY_SKIP,
+    SSHConnection,
+    POLICY_ASK,
+    POLICY_OVERWRITE,
+    POLICY_KEEP_BOTH,
+    POLICY_SKIP,
 )
 from local_transport import LocalConnection, dir_list, dir_tree, delete_local_item
 import tree_exporter
@@ -25,8 +30,10 @@ import tree_exporter
 from tests import common
 from tests.common import *
 
+
 def test_cmd_posix_builders_exact():
     from commands import posix
+
     assert posix.uname() == "uname -s"
     assert posix.rm_rf("/a/b") == "rm -rf -- /a/b"
     assert posix.mv("/a", "/b") == "mv -- /a /b"
@@ -44,18 +51,28 @@ def test_cmd_posix_builders_exact():
     tree_d = posix.find_tree_darwin("/tmp/s")
     assert "stat -f '%N %z'" in tree_d
 
-    assert (posix.tar_read_remote("/a b", "na me") ==
-            "LC_ALL=C tar -C '/a b' -cf - -- 'na me'")
+    assert posix.df_gnu("/x y") == "df -B1 --output=size,used,avail -- '/x y'"
+    assert posix.df_darwin("/x y") == "df -k -- '/x y'"
+
+    assert (
+        posix.tar_read_remote("/a b", "na me")
+        == "LC_ALL=C tar -C '/a b' -cf - -- 'na me'"
+    )
     assert posix.tar_read_local("/a", "n") == ["tar", "-C", "/a", "-cf", "-", "--", "n"]
     assert posix.tar_extract_remote("/p art") == "tar -C '/p art' -xpf -"
-    assert (posix.tar_extract_local("/p") ==
-            ["tar", "-C", "/p", "--strip-components=1", "-xpf", "-"])
-
-
+    assert posix.tar_extract_local("/p") == [
+        "tar",
+        "-C",
+        "/p",
+        "--strip-components=1",
+        "-xpf",
+        "-",
+    ]
 
 
 def test_cmd_posix_quoting_injection_safe():
     import commands.posix as posix
+
     evil = "x'; $(pwned); echo '"
     out = posix.rm_rf(evil)
     assert "rm -rf -- '" in out
@@ -77,10 +94,9 @@ def test_cmd_posix_quoting_injection_safe():
         shutil.rmtree(d, ignore_errors=True)
 
 
-
-
 def test_cmd_local_helpers():
     import commands.local
+
     d = tempfile.mkdtemp(prefix="lan-copy-cmdlocal-")
     try:
         sub = os.path.join(d, "sub dir")
@@ -92,6 +108,9 @@ def test_cmd_local_helpers():
         assert commands.local.exists(f)
         assert commands.local.stat_bytes_files(f) == {"bytes": 4, "files": 1}
         assert commands.local.size_of(sub) == 4
+        sp = commands.local.disk_space(d)
+        assert sp is not None and sp["total"] > 0 and 0 <= sp["free"] <= sp["total"]
+        assert commands.local.disk_space("/definitely/not/here") is None
         moved = os.path.join(d, "b.txt")
         commands.local.rename(f, moved)
         assert not commands.local.exists(f) and commands.local.exists(moved)
@@ -106,11 +125,10 @@ def test_cmd_local_helpers():
         shutil.rmtree(d, ignore_errors=True)
 
 
-
-
 def test_cmd_powershell_builders():
     from commands import powershell as ps
-    assert ps.exists(r"C:\Data") .startswith("powershell -NoProfile -EncodedCommand ")
+
+    assert ps.exists(r"C:\Data").startswith("powershell -NoProfile -EncodedCommand ")
     body = _ps_decode(ps.exists(r"C:\Data\f.txt"))
     assert "Test-Path -LiteralPath 'C:\\Data\\f.txt'" in body and "exit 0" in body
 
@@ -132,11 +150,18 @@ def test_cmd_powershell_builders():
     assert "$p = 'C:\\d'" in body
     assert "Get-ChildItem -LiteralPath $p -Recurse -File" in body
 
+    body = _ps_decode(ps.disk_space("C:\\d"))
+    assert "Resolve-Path -LiteralPath 'C:\\d'" in body
+    assert "[IO.DriveInfo]::new($p.Drive.Root)" in body
+    assert "exit 1" in body
+
     body = _ps_decode(ps.tree("C:\\d"))
-    assert "$base" in body and "Get-ChildItem -LiteralPath 'C:\\d' -Recurse -File" in body
+    assert (
+        "$base" in body and "Get-ChildItem -LiteralPath 'C:\\d' -Recurse -File" in body
+    )
 
     body = _ps_decode(ps.rename("C:\\a", "C:\\b"))
-    assert ("Move-Item -LiteralPath 'C:\\a' -Destination 'C:\\b' -Force" in body)
+    assert "Move-Item -LiteralPath 'C:\\a' -Destination 'C:\\b' -Force" in body
 
     body = _ps_decode(ps.unique_path("C:\\a.txt"))
     assert "GetFileNameWithoutExtension" in body
@@ -153,21 +178,19 @@ def test_cmd_powershell_builders():
     assert "tar.exe -C 'C:\\part' -xpf -" in body
 
 
-
-
 def test_cmd_powershell_path_quoting_roundtrip():
     from commands import powershell as ps
+
     # a path containing both kinds of quote must not break the encoded script
     tricky = r"C:\we'ird"
     cmd = ps.mkdir_p(tricky)
     body = _ps_decode(cmd)
-    assert (r"New-Item -ItemType Directory -Path 'C:\we''ird' -Force" in body)
+    assert r"New-Item -ItemType Directory -Path 'C:\we''ird' -Force" in body
     b2 = _ps_decode(ps.exists(tricky + r"\f"))
     assert r"Test-Path -LiteralPath 'C:\we''ird\f'" in b2
 
 
 # -- transfer engine (remote destination over a local-filesystem fake) ------
-
 
 
 ALL_TESTS = (

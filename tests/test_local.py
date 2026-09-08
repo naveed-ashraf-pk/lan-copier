@@ -1,4 +1,5 @@
 """Tests for LocalConnection and local-filesystem operations."""
+
 import glob
 import io
 import json
@@ -17,13 +18,18 @@ import base64
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ssh_transport import (
-    SSHConnection, POLICY_ASK, POLICY_OVERWRITE, POLICY_KEEP_BOTH, POLICY_SKIP,
+    SSHConnection,
+    POLICY_ASK,
+    POLICY_OVERWRITE,
+    POLICY_KEEP_BOTH,
+    POLICY_SKIP,
 )
 from local_transport import LocalConnection, dir_list, dir_tree, delete_local_item
 import tree_exporter
 
 from tests import common
 from tests.common import *
+
 
 def test_dir_list():
     from local_transport import dir_list
@@ -43,27 +49,25 @@ def test_dir_list():
         by_name = {it["name"]: it for it in items}
         assert by_name["f.txt"]["is_dir"] is False
         assert by_name["f.txt"]["size"] == 5
-        assert isinstance(by_name["f.txt"]["mtime_epoch"], int), \
+        assert isinstance(by_name["f.txt"]["mtime_epoch"], int), (
             "raw epoch mtime must be present for sorting"
+        )
         assert by_name["f.txt"]["mtime_epoch"] > 0
         assert by_name["sub"]["is_dir"] is True
         assert by_name["sub"]["size"] == 0
         if lnk:
             assert by_name["lnk"]["is_link"] is True
             assert by_name["lnk"]["is_dir"] is False
-        assert dir_list(os.path.join(d, "nope")) is None, \
+        assert dir_list(os.path.join(d, "nope")) is None, (
             "missing folder must return None like the remote side"
+        )
         assert dir_list("~") is not None, "local tilde must expand to the home folder"
     finally:
         shutil.rmtree(d)
 
 
-
-
 def local_conn():
     return LocalConnection()
-
-
 
 
 def test_local_home_and_expand():
@@ -73,8 +77,6 @@ def test_local_home_and_expand():
     assert c.expand_remote("~/x") == os.path.join(os.path.expanduser("~"), "x")
     assert c.expand_remote("/abs/path") == "/abs/path"
     assert c.expand_remote("relative") == "relative"
-
-
 
 
 def test_local_list_dir():
@@ -98,8 +100,6 @@ def test_local_list_dir():
         shutil.rmtree(d)
 
 
-
-
 def test_local_list_home_tilde():
     d = tempfile.mkdtemp()
     old = os.environ.get("HOME")
@@ -116,8 +116,6 @@ def test_local_list_home_tilde():
         else:
             os.environ["HOME"] = old
         shutil.rmtree(d)
-
-
 
 
 def test_local_list_dir_error_kinds():
@@ -145,8 +143,6 @@ def test_local_list_dir_error_kinds():
         shutil.rmtree(d)
 
 
-
-
 def test_local_copy_scp_dir_rejected():
     d = tempfile.mkdtemp()
     try:
@@ -162,8 +158,6 @@ def test_local_copy_scp_dir_rejected():
         assert parts_in(d) == []
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_local_stat_remote():
@@ -184,6 +178,54 @@ def test_local_stat_remote():
         shutil.rmtree(d)
 
 
+def test_local_stat_remote_partial():
+    # An unreadable file/directory inside the tree must be reported as
+    # `partial` (an undercount), never silently treated as complete.
+    import unittest.mock as mock
+
+    d = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d, "a.txt"), "w") as f:
+            f.write("abc")
+        os.makedirs(os.path.join(d, "sub"))
+        with open(os.path.join(d, "sub", "b.txt"), "w") as f:
+            f.write("de")
+        c = local_conn()
+        caused = []
+        real_getsize = os.path.getsize
+
+        def _flaky_getsize(p):
+            if os.path.basename(p) == "b.txt":
+                caused.append(p)
+                raise OSError("permission denied")
+            return real_getsize(p)
+
+        with mock.patch("local_transport.os.path.getsize", side_effect=_flaky_getsize):
+            st = c.stat_remote(d)
+            assert caused, "the unreadable file must actually be walked"
+            assert st["bytes"] == 3, st  # only a.txt counted
+            assert st["files"] == 1, st
+            assert st.get("partial") is True, "undercount must be flagged partial"
+
+            st = c.stat_remote(os.path.join(d, "sub"))
+            assert st["bytes"] == 0 and st["files"] == 0, st
+            assert st.get("partial") is True, (
+                "fully-skipped subtree still flags partial"
+            )
+    finally:
+        shutil.rmtree(d)
+
+
+def test_local_disk_space():
+    d = tempfile.mkdtemp(prefix="lan-copy-dsk-")
+    try:
+        c = local_conn()
+        ds = c.disk_space(d)
+        assert ds is not None
+        assert ds["total"] > 0 and 0 <= ds["free"] <= ds["total"]
+        assert c.disk_space("/definitely/not/here") is None
+    finally:
+        shutil.rmtree(d)
 
 
 def test_local_tree_remote():
@@ -197,12 +239,11 @@ def test_local_tree_remote():
         c = local_conn()
         tree = c.tree_remote(d)
         assert tree == {"a.txt": 3, "sub/b.txt": 2}
-        assert c.tree_remote(os.path.join(d, "nope")) is None, \
+        assert c.tree_remote(os.path.join(d, "nope")) is None, (
             "missing source folder must fail like the SSH side"
+        )
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_local_copy_file_overwrite():
@@ -224,8 +265,6 @@ def test_local_copy_file_overwrite():
         shutil.rmtree(d)
 
 
-
-
 def test_local_copy_file_skip():
     d = tempfile.mkdtemp()
     try:
@@ -241,8 +280,6 @@ def test_local_copy_file_skip():
         assert open(dest).read() == "old"
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_local_copy_file_keep_both():
@@ -264,8 +301,6 @@ def test_local_copy_file_keep_both():
         shutil.rmtree(d)
 
 
-
-
 def test_local_copy_ask_same_size_skips():
     d = tempfile.mkdtemp()
     try:
@@ -277,14 +312,13 @@ def test_local_copy_ask_same_size_skips():
             f.write("data")
         c = local_conn()
         asked = []
-        status, _ = c.copy(src, dest, policy=POLICY_ASK,
-                           on_ask=lambda f, r, l: asked.append((f, r, l)))
+        status, _ = c.copy(
+            src, dest, policy=POLICY_ASK, on_ask=lambda f, r, l: asked.append((f, r, l))
+        )
         assert status == "skipped", "same size must skip silently, no dialog"
         assert asked == []
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_local_copy_ask_overwrite():
@@ -298,15 +332,17 @@ def test_local_copy_ask_overwrite():
             f.write("old")
         c = local_conn()
         asked = []
-        status, _ = c.copy(src, dest, policy=POLICY_ASK,
-                           on_ask=lambda f, r, l: asked.append((f, r, l)) or POLICY_OVERWRITE)
+        status, _ = c.copy(
+            src,
+            dest,
+            policy=POLICY_ASK,
+            on_ask=lambda f, r, l: asked.append((f, r, l)) or POLICY_OVERWRITE,
+        )
         assert status == "done"
         assert len(asked) == 1 and asked[0][1] == 10, asked
         assert open(dest).read() == "newcontent"
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_local_copy_ask_cancel():
@@ -327,8 +363,6 @@ def test_local_copy_ask_cancel():
         shutil.rmtree(d)
 
 
-
-
 def test_local_copy_dir_merge():
     src = tempfile.mkdtemp()
     dest = tempfile.mkdtemp()
@@ -346,18 +380,18 @@ def test_local_copy_dir_merge():
         c = local_conn()
         status, _ = c.copy(src, dest, policy=POLICY_OVERWRITE, method="tar")
         assert status == "done"
-        assert open(os.path.join(dest, "a.txt")).read() == "new", \
+        assert open(os.path.join(dest, "a.txt")).read() == "new", (
             "same-named file replaced in the merge"
-        assert open(os.path.join(dest, "keep.txt")).read() == "keep", \
+        )
+        assert open(os.path.join(dest, "keep.txt")).read() == "keep", (
             "unrelated dest entries preserved"
+        )
         assert open(os.path.join(dest, "sub", "b.txt")).read() == "bee"
         assert os.path.isdir(os.path.join(dest, "empty")), "empty folder kept"
         assert parts_in(dest) == []
     finally:
         shutil.rmtree(src)
         shutil.rmtree(dest)
-
-
 
 
 def test_local_copy_dir_to_new_name():
@@ -367,15 +401,15 @@ def test_local_copy_dir_to_new_name():
         with open(os.path.join(src, "a.txt"), "w") as f:
             f.write("data")
         c = local_conn()
-        status, detail = c.copy(src, os.path.join(dest, "newdir"), policy=POLICY_OVERWRITE, method="tar")
+        status, detail = c.copy(
+            src, os.path.join(dest, "newdir"), policy=POLICY_OVERWRITE, method="tar"
+        )
         assert status == "done"
         assert open(os.path.join(dest, "newdir", "a.txt")).read() == "data"
         assert parts_in(dest) == []
     finally:
         shutil.rmtree(src)
         shutil.rmtree(dest)
-
-
 
 
 def test_local_copy_dir_conflicts():
@@ -407,8 +441,6 @@ def test_local_copy_dir_conflicts():
         shutil.rmtree(dest)
 
 
-
-
 def test_local_copy_symlinks():
     src = tempfile.mkdtemp()
     dest = tempfile.mkdtemp()
@@ -424,15 +456,17 @@ def test_local_copy_symlinks():
         c = local_conn()
         status, _ = c.copy(src, dest, policy=POLICY_OVERWRITE, method="tar")
         assert status == "done"
-        assert os.path.islink(os.path.join(dest, "lnk")), "file symlink recreated as symlink"
+        assert os.path.islink(os.path.join(dest, "lnk")), (
+            "file symlink recreated as symlink"
+        )
         assert os.readlink(os.path.join(dest, "lnk")) == "target.txt"
-        assert os.path.islink(os.path.join(dest, "dangling")), "dangling symlink recreated"
+        assert os.path.islink(os.path.join(dest, "dangling")), (
+            "dangling symlink recreated"
+        )
         assert open(os.path.join(dest, "target.txt")).read() == "data"
         assert parts_in(dest) == []
     finally:
         shutil.rmtree(src)
-
-
 
 
 def test_local_copy_part_skips_own_output():
@@ -454,8 +488,6 @@ def test_local_copy_part_skips_own_output():
         shutil.rmtree(src)
 
 
-
-
 def test_local_copy_abort_cleans_part():
     src = tempfile.mkdtemp()
     dest = tempfile.mkdtemp()
@@ -466,8 +498,15 @@ def test_local_copy_abort_cleans_part():
         sink = []
         result = {}
         c.pause(sink)  # stall before the copy starts -> deterministic abort
-        t = threading.Thread(target=lambda: result.update(
-            {"r": c.copy(src, dest, policy=POLICY_OVERWRITE, method="tar", proc_sink=sink)}))
+        t = threading.Thread(
+            target=lambda: result.update(
+                {
+                    "r": c.copy(
+                        src, dest, policy=POLICY_OVERWRITE, method="tar", proc_sink=sink
+                    )
+                }
+            )
+        )
         t.start()
         time.sleep(0.2)
         c.kill_all()
@@ -482,8 +521,6 @@ def test_local_copy_abort_cleans_part():
         shutil.rmtree(dest)
 
 
-
-
 def test_local_copy_pause_resume():
     src = tempfile.mkdtemp()
     dest = tempfile.mkdtemp()
@@ -494,8 +531,15 @@ def test_local_copy_pause_resume():
         sink = []
         result = {}
         c.pause(sink)  # stall before the copy starts
-        t = threading.Thread(target=lambda: result.update(
-            {"r": c.copy(src, dest, policy=POLICY_OVERWRITE, method="tar", proc_sink=sink)}))
+        t = threading.Thread(
+            target=lambda: result.update(
+                {
+                    "r": c.copy(
+                        src, dest, policy=POLICY_OVERWRITE, method="tar", proc_sink=sink
+                    )
+                }
+            )
+        )
         t.start()
         time.sleep(0.2)
         assert t.is_alive(), "paused copy must not finish"
@@ -507,8 +551,6 @@ def test_local_copy_pause_resume():
     finally:
         shutil.rmtree(src)
         shutil.rmtree(dest)
-
-
 
 
 def test_local_copy_progress_and_finish():
@@ -523,9 +565,14 @@ def test_local_copy_progress_and_finish():
         c = local_conn()
         calls = []
         done = []
-        status, _ = c.copy(src, dest, policy=POLICY_OVERWRITE, method="tar",
-                           on_bytes=lambda b, n: calls.append((b, n)),
-                           on_finish=lambda: done.append(True))
+        status, _ = c.copy(
+            src,
+            dest,
+            policy=POLICY_OVERWRITE,
+            method="tar",
+            on_bytes=lambda b, n: calls.append((b, n)),
+            on_finish=lambda: done.append(True),
+        )
         assert status == "done"
         assert calls and calls[-1] == (5, 2), f"final progress must flush: {calls}"
         assert all(a <= b for a, b in zip(calls, calls[1:])), "bytes must be monotonic"
@@ -535,20 +582,17 @@ def test_local_copy_progress_and_finish():
         shutil.rmtree(dest)
 
 
-
-
 def test_local_copy_missing_source():
     d = tempfile.mkdtemp()
     try:
         c = local_conn()
-        status, detail = c.copy(os.path.join(d, "nope"), os.path.join(d, "out"),
-                                policy=POLICY_OVERWRITE)
+        status, detail = c.copy(
+            os.path.join(d, "nope"), os.path.join(d, "out"), policy=POLICY_OVERWRITE
+        )
         assert status == "failed"
         assert parts_in(d) == []
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_local_copy_unreadable_subdir():
@@ -566,7 +610,9 @@ def test_local_copy_unreadable_subdir():
         try:
             c = local_conn()
             status, _ = c.copy(src, dest, policy=POLICY_OVERWRITE, method="tar")
-            assert status == "failed", "unreadable source must fail, not succeed silently"
+            assert status == "failed", (
+                "unreadable source must fail, not succeed silently"
+            )
             assert parts_in(dest) == []
         finally:
             os.chmod(os.path.join(src, "locked"), 0o755)
@@ -575,27 +621,23 @@ def test_local_copy_unreadable_subdir():
         shutil.rmtree(dest)
 
 
-
-
 def test_local_close_idempotent():
     c = local_conn()
     c.close()
     c.close()  # must not raise
 
 
-
-
 def test_local_friendly_error():
     title, _ = LocalConnection.friendly_error("Permission denied (publickey)")
     assert title == "Permission denied", title
-    title, _ = LocalConnection.friendly_error("ls: cannot access '/x': No such file or directory")
+    title, _ = LocalConnection.friendly_error(
+        "ls: cannot access '/x': No such file or directory"
+    )
     assert title == "Folder not found", title
     title, _ = LocalConnection.friendly_error("Not a directory")
     assert title == "Not a folder", title
     title, _ = LocalConnection.friendly_error("")
     assert title == "Local error", title
-
-
 
 
 def test_merge_dir_preserves_extras():
@@ -614,12 +656,12 @@ def test_merge_dir_preserves_extras():
         assert open(os.path.join(final, "new.txt")).read() == "new"
         assert open(os.path.join(final, "sub", "inner.txt")).read() == "inner"
         assert open(os.path.join(final, "old.txt")).read() == "old", "extra kept"
-        assert open(os.path.join(final, "sub", "keep.txt")).read() == "keep", "extra kept"
+        assert open(os.path.join(final, "sub", "keep.txt")).read() == "keep", (
+            "extra kept"
+        )
         assert not os.path.exists(part), "merged part dir is emptied and removed"
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_place_file_atomic():
@@ -638,8 +680,6 @@ def test_place_file_atomic():
         shutil.rmtree(d)
 
 
-
-
 def test_place_dir_over_file():
     d = tempfile.mkdtemp()
     try:
@@ -654,8 +694,6 @@ def test_place_dir_over_file():
         assert not os.path.exists(part)
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_sweep_ignores_live_parts():
@@ -687,8 +725,6 @@ def test_sweep_ignores_live_parts():
         shutil.rmtree(d)
 
 
-
-
 def test_local_delete_file_and_dir():
     d = tempfile.mkdtemp(prefix="test_del_")
     try:
@@ -714,8 +750,6 @@ def test_local_delete_file_and_dir():
         assert ok is True and not err
     finally:
         shutil.rmtree(d, ignore_errors=True)
-
-
 
 
 def test_local_delete_symlink_safety():
@@ -752,8 +786,6 @@ def test_local_delete_symlink_safety():
         shutil.rmtree(d, ignore_errors=True)
 
 
-
-
 def test_local_delete_readonly_ntfs():
     d = tempfile.mkdtemp(prefix="test_del_ro_")
     try:
@@ -780,16 +812,12 @@ def test_local_delete_readonly_ntfs():
         shutil.rmtree(d, ignore_errors=True)
 
 
-
-
 def test_local_delete_protected_paths():
     home = os.path.expanduser("~")
     for bad in ("", "/", "~", "~/", ".", "..", home, home + "/"):
         ok, err = delete_local_item(bad)
         assert ok is False, f"Protected path '{bad}' must be rejected"
         assert "protected" in err.lower() or "refusing" in err.lower()
-
-
 
 
 ALL_TESTS = (
@@ -800,6 +828,7 @@ ALL_TESTS = (
     test_local_list_dir_error_kinds,
     test_local_copy_scp_dir_rejected,
     test_local_stat_remote,
+    test_local_stat_remote_partial,
     test_local_tree_remote,
     test_local_copy_file_overwrite,
     test_local_copy_file_skip,
@@ -823,6 +852,7 @@ ALL_TESTS = (
     test_place_file_atomic,
     test_place_dir_over_file,
     test_sweep_ignores_live_parts,
+    test_local_disk_space,
     test_local_delete_file_and_dir,
     test_local_delete_symlink_safety,
     test_local_delete_readonly_ntfs,

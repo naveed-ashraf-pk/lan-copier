@@ -28,9 +28,25 @@ def _ps_quote(path):
 class SSHConnection:
     kind = "ssh"
 
-    _MONTHS = {m: i + 1 for i, m in enumerate(
-        ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
-         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))}
+    _MONTHS = {
+        m: i + 1
+        for i, m in enumerate(
+            (
+                "Jan",
+                "Feb",
+                "Mar",
+                "Apr",
+                "May",
+                "Jun",
+                "Jul",
+                "Aug",
+                "Sep",
+                "Oct",
+                "Nov",
+                "Dec",
+            )
+        )
+    }
 
     def __init__(self, host, port, user, password):
         self.host = host
@@ -111,7 +127,8 @@ class SSHConnection:
         if not self._ensure_master():
             return "Windows"
         rc, out, err = self._run_cmd(
-            ["ssh"] + self._opts() + [self.target, "uname -s"], timeout=15)
+            ["ssh"] + self._opts() + [self.target, "uname -s"], timeout=15
+        )
         if rc == 0 and (out or "").strip():
             return out.strip()
         return "Windows"
@@ -124,27 +141,40 @@ class SSHConnection:
                 self._has_tar = True
             else:
                 rc, _, _ = self._run_cmd(
-                    ["ssh"] + self._opts() + [self.target, ps_cmd.has_tar()], timeout=20)
-                self._has_tar = (rc == 0)
+                    ["ssh"] + self._opts() + [self.target, ps_cmd.has_tar()], timeout=20
+                )
+                self._has_tar = rc == 0
         return self._has_tar
 
     def _opts(self, legacy=False):
         opts = [
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "UserKnownHostsFile=" + os.path.expanduser("~/.ssh/known_hosts"),
-            "-o", "ConnectTimeout=6",
-            "-o", "NumberOfPasswordPrompts=1",
-            "-o", "PreferredAuthentications=password",
-            "-o", "IdentitiesOnly=yes",
-            "-o", "ControlPath=" + self.control,
-            "-o", "ControlMaster=no",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "UserKnownHostsFile=" + os.path.expanduser("~/.ssh/known_hosts"),
+            "-o",
+            "ConnectTimeout=6",
+            "-o",
+            "NumberOfPasswordPrompts=1",
+            "-o",
+            "PreferredAuthentications=password",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "ControlPath=" + self.control,
+            "-o",
+            "ControlMaster=no",
         ]
         if legacy:
             opts += [
-                "-o", "KexAlgorithms=+diffie-hellman-group14-sha256,diffie-hellman-group14-sha1",
-                "-o", "HostKeyAlgorithms=+ssh-rsa",
-                "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
-                "-o", "Ciphers=+aes128-cbc,aes192-cbc,aes256-cbc,3des-cbc",
+                "-o",
+                "KexAlgorithms=+diffie-hellman-group14-sha256,diffie-hellman-group14-sha1",
+                "-o",
+                "HostKeyAlgorithms=+ssh-rsa",
+                "-o",
+                "PubkeyAcceptedAlgorithms=+ssh-rsa",
+                "-o",
+                "Ciphers=+aes128-cbc,aes192-cbc,aes256-cbc,3des-cbc",
             ]
         return opts
 
@@ -182,10 +212,14 @@ class SSHConnection:
             if capture:
                 streams = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             else:
-                errf = tempfile.NamedTemporaryFile(prefix="lan-copier-err-", mode="w+", delete=False)
+                errf = tempfile.NamedTemporaryFile(
+                    prefix="lan-copier-err-", mode="w+", delete=False
+                )
                 streams = dict(stdout=subprocess.DEVNULL, stderr=errf)
             try:
-                proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, text=True, **streams)
+                proc = subprocess.Popen(
+                    argv, env=env, stdin=subprocess.DEVNULL, text=True, **streams
+                )
             except OSError as e:
                 if errf is not None:
                     errf.close()
@@ -263,17 +297,27 @@ class SSHConnection:
     def _ensure_master(self):
         with self._master_lock:
             if os.path.exists(self.control):
-                rc, _, _ = self._run(["ssh"] + self._opts() + ["-O", "check", self.target], timeout=8)
+                rc, _, _ = self._run(
+                    ["ssh"] + self._opts() + ["-O", "check", self.target], timeout=8
+                )
                 if rc == 0:
                     return True
                 try:
                     os.remove(self.control)
                 except OSError:
                     pass
-            argv = ["ssh"] + self._opts() + ["-M", "-N", "-f", "-o", "ControlPersist=300", self.target]
+            argv = (
+                ["ssh"]
+                + self._opts()
+                + ["-M", "-N", "-f", "-o", "ControlPersist=300", self.target]
+            )
             rc, _, err = self._run(argv, timeout=30, capture=False)
             if rc != 0 and self._needs_legacy(err):
-                argv = ["ssh"] + self._opts(legacy=True) + ["-M", "-N", "-f", "-o", "ControlPersist=300", self.target]
+                argv = (
+                    ["ssh"]
+                    + self._opts(legacy=True)
+                    + ["-M", "-N", "-f", "-o", "ControlPersist=300", self.target]
+                )
                 rc, _, err = self._run(argv, timeout=30, capture=False)
             if rc != 0:
                 self.last_error = self._clean_err(err)
@@ -287,10 +331,12 @@ class SSHConnection:
             return None
         if self.os_type == "Windows":
             rc, out, err = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, ps_cmd.home_dir()], timeout=20)
+                ["ssh"] + self._opts() + [self.target, ps_cmd.home_dir()], timeout=20
+            )
         else:
             rc, out, err = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, "echo $HOME"], timeout=20)
+                ["ssh"] + self._opts() + [self.target, "echo $HOME"], timeout=20
+            )
         if rc != 0:
             self.last_error = self._clean_err(err)
             return None
@@ -308,10 +354,13 @@ class SSHConnection:
         if self._ensure_master():
             if self.os_type == "Windows":
                 rc, out, _ = self._run_cmd(
-                    ["ssh"] + self._opts() + [self.target, ps_cmd.hostname()], timeout=20)
+                    ["ssh"] + self._opts() + [self.target, ps_cmd.hostname()],
+                    timeout=20,
+                )
             else:
                 rc, out, _ = self._run_cmd(
-                    ["ssh"] + self._opts() + [self.target, "hostname"], timeout=20)
+                    ["ssh"] + self._opts() + [self.target, "hostname"], timeout=20
+                )
             if rc == 0 and (out or "").strip():
                 name = out.strip()
         self._hostname = name
@@ -354,15 +403,19 @@ class SSHConnection:
         low = err.lower()
         hint = None
         if "operation not permitted" in low:
-            hint = ("The remote system refused the delete (EPERM), usually because:\n"
-                    "• the item is locked or flagged immutable "
-                    "(macOS Finder 'Locked' / Linux 'chattr +i')\n"
-                    "• the volume is mounted read-only\n"
-                    "• your account lacks write permission on the containing folder")
+            hint = (
+                "The remote system refused the delete (EPERM), usually because:\n"
+                "• the item is locked or flagged immutable "
+                "(macOS Finder 'Locked' / Linux 'chattr +i')\n"
+                "• the volume is mounted read-only\n"
+                "• your account lacks write permission on the containing folder"
+            )
         elif "permission denied" in low:
-            hint = ("The account lacks permission to remove this item.\n"
-                    "Deleting needs write access to the containing folder; "
-                    "check owner/permissions there.")
+            hint = (
+                "The account lacks permission to remove this item.\n"
+                "Deleting needs write access to the containing folder; "
+                "check owner/permissions there."
+            )
         elif "read-only file system" in low:
             hint = "The remote volume is mounted read-only; nothing can be deleted from it."
         elif "resource busy" in low or "text file busy" in low:
@@ -381,7 +434,11 @@ class SSHConnection:
         if self._os_windows():
             if self._is_protected_windows_path(clean_path):
                 return False, f"Refusing to delete protected path: {remote_path}"
-            cmd = ["ssh"] + self._opts() + [self.target, ps_cmd.delete_recurse(clean_path)]
+            cmd = (
+                ["ssh"]
+                + self._opts()
+                + [self.target, ps_cmd.delete_recurse(clean_path)]
+            )
             rc, out, err = self._run_cmd(cmd, timeout=120)
             if self.on_command:
                 self.on_command(cmd, rc, err)
@@ -417,7 +474,8 @@ class SSHConnection:
             return self._list_dir_windows(path)
         remote = posix_cmd.ls_la(path)
         rc, out, err = self._run_cmd(
-            ["ssh"] + self._opts() + [self.target, remote], timeout=30)
+            ["ssh"] + self._opts() + [self.target, remote], timeout=30
+        )
         if rc != 0:
             self.last_error = self._clean_err(err)
             return None
@@ -429,7 +487,8 @@ class SSHConnection:
 
     def _list_dir_windows(self, path):
         rc, out, err = self._run_cmd(
-            ["ssh"] + self._opts() + [self.target, ps_cmd.list_dir(path)], timeout=30)
+            ["ssh"] + self._opts() + [self.target, ps_cmd.list_dir(path)], timeout=30
+        )
         if rc != 0:
             self.last_error = self._clean_err(err)
             return None
@@ -445,7 +504,7 @@ class SSHConnection:
         are '1'/'0'. Names may themselves contain tabs; a name is everything
         after the 4th field."""
         items = []
-        text = (out or "")
+        text = out or ""
         if text.startswith("\ufeff"):
             text = text[1:]
         for line in text.splitlines():
@@ -463,14 +522,16 @@ class SSHConnection:
                 epoch = int(parts[3])
             except ValueError:
                 continue
-            items.append({
-                "name": name,
-                "is_dir": is_dir,
-                "is_link": is_link,
-                "size": size,
-                "mtime": time.strftime("%b %d %H:%M", time.localtime(epoch)),
-                "mtime_epoch": epoch,
-            })
+            items.append(
+                {
+                    "name": name,
+                    "is_dir": is_dir,
+                    "is_link": is_link,
+                    "size": size,
+                    "mtime": time.strftime("%b %d %H:%M", time.localtime(epoch)),
+                    "mtime_epoch": epoch,
+                }
+            )
         return items
 
     def stat(self, path):
@@ -484,15 +545,20 @@ class SSHConnection:
         if os_type == "Windows":
             rc, out, err = self._run_cmd(
                 ["ssh"] + self._opts() + [self.target, ps_cmd.stat_bytes_files(path)],
-                timeout=60)
+                timeout=60,
+            )
         elif os_type == "Darwin":
             rc, out, err = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, posix_cmd.find_stat_darwin(path)],
-                timeout=60)
+                ["ssh"]
+                + self._opts()
+                + [self.target, posix_cmd.find_stat_darwin(path)],
+                timeout=60,
+            )
         else:
             rc, out, err = self._run_cmd(
                 ["ssh"] + self._opts() + [self.target, posix_cmd.find_stat_gnu(path)],
-                timeout=60)
+                timeout=60,
+            )
         if rc != 0:
             self.last_error = self._clean_err(err)
             return None
@@ -511,20 +577,87 @@ class SSHConnection:
         st = self.stat(path)
         return st["bytes"] if st else None
 
-    def copy(self, remote_path, local_dest, policy=POLICY_ASK, size=None,
-             method="scp", on_ask=None, on_part=None, on_bytes=None,
-             proc_sink=None, on_finish=None):
+    def disk_space(self, path):
+        """{total: bytes, free: bytes} on the filesystem holding a remote path,
+        or None when it cannot be determined. Uses df (POSIX) or
+        IO.DriveInfo (Windows); mirrors stat()'s OS branching."""
+        if not self._ensure_master():
+            return None
+        path = self.expand_remote(path)
+        os_type = self.os_type
+        if os_type == "Windows":
+            rc, out, err = self._run_cmd(
+                ["ssh"] + self._opts() + [self.target, ps_cmd.disk_space(path)],
+                timeout=20,
+            )
+        elif os_type == "Darwin":
+            rc, out, err = self._run_cmd(
+                ["ssh"] + self._opts() + [self.target, posix_cmd.df_darwin(path)],
+                timeout=20,
+            )
+        else:
+            rc, out, err = self._run_cmd(
+                ["ssh"] + self._opts() + [self.target, posix_cmd.df_gnu(path)],
+                timeout=20,
+            )
+        if rc != 0:
+            self.last_error = self._clean_err(err)
+            return None
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        if not lines:
+            return None
+        parts = lines[-1].split()
+        try:
+            if os_type == "Darwin":
+                # df -k: [1]=1024-blocks total, [3]=available KB
+                return {"total": int(parts[1]) * 1024, "free": int(parts[3]) * 1024}
+            # GNU df -B1 --output=size,used,avail: [0]=size, [2]=avail (bytes)
+            return {"total": int(parts[0]), "free": int(parts[2])}
+        except (ValueError, IndexError):
+            return None
+
+    def copy(
+        self,
+        remote_path,
+        local_dest,
+        policy=POLICY_ASK,
+        size=None,
+        method="scp",
+        on_ask=None,
+        on_part=None,
+        on_bytes=None,
+        proc_sink=None,
+        on_finish=None,
+    ):
         """Back-compat entry point for a copy that lands on the *local*
         destination. The transfer engine delegates here for local ends; the UI
         and tests may keep using it unchanged."""
-        return self._copy_legacy(remote_path, local_dest, policy=policy,
-                                 size=size, method=method, on_ask=on_ask,
-                                 on_part=on_part, on_bytes=on_bytes,
-                                 proc_sink=proc_sink, on_finish=on_finish)
+        return self._copy_legacy(
+            remote_path,
+            local_dest,
+            policy=policy,
+            size=size,
+            method=method,
+            on_ask=on_ask,
+            on_part=on_part,
+            on_bytes=on_bytes,
+            proc_sink=proc_sink,
+            on_finish=on_finish,
+        )
 
-    def _copy_legacy(self, remote_path, local_dest, policy=POLICY_ASK, size=None,
-                     method="scp", on_ask=None, on_part=None, on_bytes=None,
-                     proc_sink=None, on_finish=None):
+    def _copy_legacy(
+        self,
+        remote_path,
+        local_dest,
+        policy=POLICY_ASK,
+        size=None,
+        method="scp",
+        on_ask=None,
+        on_part=None,
+        on_bytes=None,
+        proc_sink=None,
+        on_finish=None,
+    ):
         """Copy remote_path into local_dest. Returns (status, detail) where
         status is one of "done", "skipped", "failed", "aborted", "cancelled".
 
@@ -556,7 +689,9 @@ class SSHConnection:
             if policy == POLICY_KEEP_BOTH:
                 final = self.unique_path(final)
             elif policy == POLICY_ASK:
-                remote_size = size if size is not None else self._remote_size(remote_path)
+                remote_size = (
+                    size if size is not None else self._remote_size(remote_path)
+                )
                 local_size = self._local_size(final)
                 if remote_size is not None and local_size == remote_size:
                     return "skipped", "already exists (same size)"
@@ -583,11 +718,13 @@ class SSHConnection:
             self._live_parts.add(part)
         try:
             if method == "tar":
-                status, detail = self._copy_tar(remote_path, part, final, on_bytes,
-                                                proc_sink=proc_sink)
+                status, detail = self._copy_tar(
+                    remote_path, part, final, on_bytes, proc_sink=proc_sink
+                )
             else:
-                status, detail = self._copy_scp(remote_path, part, final,
-                                                proc_sink=proc_sink)
+                status, detail = self._copy_scp(
+                    remote_path, part, final, proc_sink=proc_sink
+                )
             if status != "done":
                 return status, detail
             if on_finish is not None:
@@ -613,8 +750,9 @@ class SSHConnection:
         """Remove leftover .part entries for final that no live transfer owns."""
         d = os.path.dirname(final)
         try:
-            candidates = glob.glob(os.path.join(
-                d, f".{os.path.basename(final)}.lan-copier-part-*"))
+            candidates = glob.glob(
+                os.path.join(d, f".{os.path.basename(final)}.lan-copier-part-*")
+            )
         except OSError:
             return
         with self._live_parts_lock:
@@ -633,7 +771,10 @@ class SSHConnection:
         try:
             proc = self._spawn(
                 ["ssh"] + self._opts() + [self.target, remote_cmd],
-                env, stdin=stdin, stdout=subprocess.PIPE)
+                env,
+                stdin=stdin,
+                stdout=subprocess.PIPE,
+            )
         except OSError as e:
             shutil.rmtree(d, ignore_errors=True)
             self.last_error = f"spawn failed: {e}"
@@ -670,8 +811,11 @@ class SSHConnection:
         base = rp.basename(final, family)
         with self._part_lock:
             while True:
-                cand = rp.join(family, d,
-                               f".{base}.lan-copier-part-{os.getpid()}-{self._part_counter}")
+                cand = rp.join(
+                    family,
+                    d,
+                    f".{base}.lan-copier-part-{os.getpid()}-{self._part_counter}",
+                )
                 self._part_counter += 1
                 if not self.exists(cand):
                     return cand
@@ -684,12 +828,15 @@ class SSHConnection:
         d = rp.dirname(final, family)
         base = rp.basename(final, family)
         if self._os_windows():
-            glob = (f"$p = '{d}'.Replace('/','\\\\')\n"
-                    f"Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue | "
-                    f"Where-Object {{ $_.Name -like '.{base}.lan-copier-part-*' }} | "
-                    f"ForEach-Object {{ $_.FullName }}")
+            glob = (
+                f"$p = '{d}'.Replace('/','\\\\')\n"
+                f"Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue | "
+                f"Where-Object {{ $_.Name -like '.{base}.lan-copier-part-*' }} | "
+                f"ForEach-Object {{ $_.FullName }}"
+            )
             rc, out, _ = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, ps_cmd._script(glob)], timeout=30)
+                ["ssh"] + self._opts() + [self.target, ps_cmd._script(glob)], timeout=30
+            )
             if rc != 0 or not out.strip():
                 return
             with self._live_parts_lock:
@@ -697,13 +844,20 @@ class SSHConnection:
             for line in out.splitlines():
                 cand = line.replace("\\", "/")
                 if cand not in live:
-                    self._run_cmd(["ssh"] + self._opts()
-                                  + [self.target, ps_cmd.delete_recurse(cand)], timeout=30)
+                    self._run_cmd(
+                        ["ssh"]
+                        + self._opts()
+                        + [self.target, ps_cmd.delete_recurse(cand)],
+                        timeout=30,
+                    )
         else:
-            remote = (f"for f in {posix_cmd.q(d)}/.{posix_cmd.q(base)}.lan-copier-part-*; do "
-                      f"[ -e \"$f\" ] || [ -L \"$f\" ] || continue; printf '%s\\n' \"$f\"; done")
+            remote = (
+                f"for f in {posix_cmd.q(d)}/.{posix_cmd.q(base)}.lan-copier-part-*; do "
+                f'[ -e "$f" ] || [ -L "$f" ] || continue; printf \'%s\\n\' "$f"; done'
+            )
             rc, out, _ = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, remote], timeout=30)
+                ["ssh"] + self._opts() + [self.target, remote], timeout=30
+            )
             if rc != 0 or not out.strip():
                 return
             with self._live_parts_lock:
@@ -711,18 +865,24 @@ class SSHConnection:
             for line in out.splitlines():
                 cand = line.strip()
                 if cand not in live:
-                    self._run_cmd(["ssh"] + self._opts()
-                                  + [self.target, posix_cmd.rm_rf(cand)], timeout=30)
+                    self._run_cmd(
+                        ["ssh"] + self._opts() + [self.target, posix_cmd.rm_rf(cand)],
+                        timeout=30,
+                    )
 
     def rm_remote(self, path, recursive=True):
         """Permanently remove a remote file/folder. Returns (ok, err)."""
         path = self.expand_remote(path)
         if self._os_windows():
             rc, _, err = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, ps_cmd.delete_recurse(path)], timeout=120)
+                ["ssh"] + self._opts() + [self.target, ps_cmd.delete_recurse(path)],
+                timeout=120,
+            )
         else:
             rc, _, err = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, posix_cmd.rm_rf(path)], timeout=60)
+                ["ssh"] + self._opts() + [self.target, posix_cmd.rm_rf(path)],
+                timeout=60,
+            )
         if rc != 0:
             self.last_error = self._clean_err(err)
             return False, self.last_error
@@ -768,10 +928,13 @@ class SSHConnection:
         path = self.expand_remote(path)
         if self._os_windows():
             rc, _, _ = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, ps_cmd.exists(path)], timeout=20)
+                ["ssh"] + self._opts() + [self.target, ps_cmd.exists(path)], timeout=20
+            )
         else:
             rc, _, _ = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, posix_cmd.test_exists(path)], timeout=20)
+                ["ssh"] + self._opts() + [self.target, posix_cmd.test_exists(path)],
+                timeout=20,
+            )
         return rc == 0
 
     def is_dir(self, path):
@@ -786,18 +949,23 @@ class SSHConnection:
         # so guard with a lstat-level check for POSIX hosts.
         if not self._os_windows():
             rc, out, _ = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target,
-                                          f"test -d -- {shlex.quote(path)} && echo 1"],
-                timeout=20)
+                ["ssh"]
+                + self._opts()
+                + [self.target, f"test -d -- {shlex.quote(path)} && echo 1"],
+                timeout=20,
+            )
             return rc == 0 and out.strip() == "1"
         # Windows: Test-Path -PathType Container (reparse points excluded)
         return self._run_is_dir_windows(path)
 
     def _run_is_dir_windows(self, path):
-        body = (f"if (Test-Path -LiteralPath '{_ps_quote(path)}' -PathType Container) "
-                f"{{ exit 0 }} else {{ exit 1 }}")
+        body = (
+            f"if (Test-Path -LiteralPath '{_ps_quote(path)}' -PathType Container) "
+            f"{{ exit 0 }} else {{ exit 1 }}"
+        )
         rc, _, _ = self._run_cmd(
-            ["ssh"] + self._opts() + [self.target, ps_cmd._script(body)], timeout=20)
+            ["ssh"] + self._opts() + [self.target, ps_cmd._script(body)], timeout=20
+        )
         return rc == 0
 
     def mkdir(self, path):
@@ -824,10 +992,14 @@ class SSHConnection:
         dst = self.expand_remote(dst)
         if self._os_windows():
             rc, _, err = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, ps_cmd.rename(src, dst)], timeout=30)
+                ["ssh"] + self._opts() + [self.target, ps_cmd.rename(src, dst)],
+                timeout=30,
+            )
         else:
             rc, _, err = self._run_cmd(
-                ["ssh"] + self._opts() + [self.target, posix_cmd.mv(src, dst)], timeout=30)
+                ["ssh"] + self._opts() + [self.target, posix_cmd.mv(src, dst)],
+                timeout=30,
+            )
         if rc != 0:
             self.last_error = self._clean_err(err)
             return False, self.last_error
@@ -879,8 +1051,10 @@ class SSHConnection:
             for attempt in range(attempts):
                 try:
                     proc = self._spawn(
-                        ["ssh"] + self._opts() + [self.target, remote], env,
-                        stdin=subprocess.DEVNULL)
+                        ["ssh"] + self._opts() + [self.target, remote],
+                        env,
+                        stdin=subprocess.DEVNULL,
+                    )
                 except OSError as e:
                     self.last_error = f"spawn failed: {e}"
                     return None
@@ -890,7 +1064,8 @@ class SSHConnection:
                     err = []
                     last_activity = {"t": time.monotonic()}
                     errth = threading.Thread(
-                        target=self._drain_err, args=(proc.stderr, err), daemon=True)
+                        target=self._drain_err, args=(proc.stderr, err), daemon=True
+                    )
                     errth.start()
                     buf = b""
 
@@ -951,7 +1126,7 @@ class SSHConnection:
         except ValueError:
             return
         if p.startswith(base):
-            tree[p[len(base):]] = size
+            tree[p[len(base) :]] = size
 
     def _copy_scp(self, remote_path, part, final, proc_sink=None):
         target = f"{self.target}:{self._escape_remote(remote_path)}"
@@ -961,16 +1136,21 @@ class SSHConnection:
             for attempt in range(attempts):
                 proc = self._spawn(
                     ["scp", "-p", "-r", "-q"] + self._opts() + [target, part],
-                    env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+                    env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                )
                 self._track(proc)
                 self._sink_add(proc, proc_sink)
                 try:
                     err = []
                     th = threading.Thread(
-                        target=self._drain_err, args=(proc.stderr, err), daemon=True)
+                        target=self._drain_err, args=(proc.stderr, err), daemon=True
+                    )
                     th.start()
-                    rc = self._wait_or_kill(proc, {"t": float("inf")}, stall=None,
-                                            paused=self._paused)
+                    rc = self._wait_or_kill(
+                        proc, {"t": float("inf")}, stall=None, paused=self._paused
+                    )
                     th.join(timeout=5)
                     detail = (err[0] if err else "").decode("utf-8", "replace")
                     if rc == "STALLED":
@@ -1037,8 +1217,16 @@ class SSHConnection:
                 try:
                     remote_err, local_err = [], []
                     threads = [
-                        threading.Thread(target=self._drain_err, args=(remote_proc.stderr, remote_err), daemon=True),
-                        threading.Thread(target=self._drain_err, args=(local_proc.stderr, local_err), daemon=True),
+                        threading.Thread(
+                            target=self._drain_err,
+                            args=(remote_proc.stderr, remote_err),
+                            daemon=True,
+                        ),
+                        threading.Thread(
+                            target=self._drain_err,
+                            args=(local_proc.stderr, local_err),
+                            daemon=True,
+                        ),
                     ]
                     for th in threads:
                         th.start()
@@ -1050,12 +1238,17 @@ class SSHConnection:
                             on_bytes(b, f)
 
                     pump = threading.Thread(
-                        target=self._pump, args=(remote_proc.stdout, local_proc.stdin, on_activity), daemon=True)
+                        target=self._pump,
+                        args=(remote_proc.stdout, local_proc.stdin, on_activity),
+                        daemon=True,
+                    )
                     pump.start()
-                    remote_rc = self._wait_or_kill(remote_proc, last_activity,
-                                                   paused=self._paused)
-                    local_rc = self._wait_or_kill(local_proc, last_activity,
-                                                  paused=self._paused)
+                    remote_rc = self._wait_or_kill(
+                        remote_proc, last_activity, paused=self._paused
+                    )
+                    local_rc = self._wait_or_kill(
+                        local_proc, last_activity, paused=self._paused
+                    )
                     if remote_rc == "STALLED" or local_rc == "STALLED":
                         for p, rc in ((remote_proc, remote_rc), (local_proc, local_rc)):
                             if rc == "STALLED":
@@ -1081,8 +1274,12 @@ class SSHConnection:
                         th.join(timeout=5)
                     killed_remote = remote_rc is not None and remote_rc < 0
                     killed_local = local_rc is not None and local_rc < 0
-                    remote_detail = (remote_err[0] if remote_err else "").decode("utf-8", "replace")
-                    local_detail = (local_err[0] if local_err else "").decode("utf-8", "replace")
+                    remote_detail = (remote_err[0] if remote_err else "").decode(
+                        "utf-8", "replace"
+                    )
+                    local_detail = (local_err[0] if local_err else "").decode(
+                        "utf-8", "replace"
+                    )
                     if killed_remote or killed_local:
                         if killed_remote and not killed_local and local_rc != 0:
                             self._remove(part)
@@ -1092,7 +1289,11 @@ class SSHConnection:
                             return "failed", detail
                         self._remove(part)
                         return "aborted", "killed"
-                    if remote_rc != 0 and self._mux_dead(remote_detail) and attempt == 0:
+                    if (
+                        remote_rc != 0
+                        and self._mux_dead(remote_detail)
+                        and attempt == 0
+                    ):
                         self._reset_master()
                         self._remove(part)
                         os.makedirs(part, exist_ok=True)
@@ -1140,18 +1341,24 @@ class SSHConnection:
                     return "STALLED"
 
     def _spawn_remote_tar(self, remote_cmd, env):
-        return self._spawn(["ssh"] + self._opts() + [self.target, remote_cmd], env,
-                           stdin=subprocess.DEVNULL)
+        return self._spawn(
+            ["ssh"] + self._opts() + [self.target, remote_cmd],
+            env,
+            stdin=subprocess.DEVNULL,
+        )
 
     def _spawn_local_tar(self, part):
-        return self._spawn(["tar", "-C", part, "--strip-components=1", "-xpf", "-"],
-                           os.environ, stdin=subprocess.PIPE,
-                           stdout=subprocess.DEVNULL)
+        return self._spawn(
+            ["tar", "-C", part, "--strip-components=1", "-xpf", "-"],
+            os.environ,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+        )
 
     def _spawn(self, argv, env, stdin=subprocess.PIPE, stdout=subprocess.PIPE):
         proc = subprocess.Popen(
-            argv, env=env, stdin=stdin, stdout=stdout,
-            stderr=subprocess.PIPE)
+            argv, env=env, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE
+        )
         if self.on_command:
             try:
                 self.on_command(argv, None, "")
@@ -1163,9 +1370,11 @@ class SSHConnection:
     def _close_proc(proc):
         """Close every pipe of a finished process. Callers must join any
         drain/pump threads first so no thread is reading a pipe we close."""
-        for f in (getattr(proc, "stdin", None),
-                  getattr(proc, "stdout", None),
-                  getattr(proc, "stderr", None)):
+        for f in (
+            getattr(proc, "stdin", None),
+            getattr(proc, "stdout", None),
+            getattr(proc, "stderr", None),
+        ):
             if f is not None:
                 try:
                     f.close()
@@ -1216,8 +1425,9 @@ class SSHConnection:
                 except OSError:
                     pass
         with self._procs_lock:
-            self._paused[:] = [x for x in self._paused
-                               if all(x is not q for q in items)]
+            self._paused[:] = [
+                x for x in self._paused if all(x is not q for q in items)
+            ]
 
     def kill_procs(self, sink):
         """Kill and reap every process of a transfer and drop any pause
@@ -1238,8 +1448,9 @@ class SSHConnection:
             self._untrack(p)
             self._close_proc(p)
         with self._procs_lock:
-            self._paused[:] = [x for x in self._paused
-                               if all(x is not q for q in items)]
+            self._paused[:] = [
+                x for x in self._paused if all(x is not q for q in items)
+            ]
 
     @staticmethod
     def _drain_err(f, out):
@@ -1291,7 +1502,7 @@ class SSHConnection:
                     if state == "header":
                         if len(buf) - pos < 512:
                             break
-                        h = buf[pos:pos + 512]
+                        h = buf[pos : pos + 512]
                         pos += 512
                         if h[0:100] != bytes(100) and h[156:157] in (b"0", b"\x00"):
                             files += 1
@@ -1363,7 +1574,8 @@ class SSHConnection:
         with self._part_lock:
             while True:
                 cand = os.path.join(
-                    d, f".{base}.lan-copier-part-{os.getpid()}-{self._part_counter}")
+                    d, f".{base}.lan-copier-part-{os.getpid()}-{self._part_counter}"
+                )
                 self._part_counter += 1
                 if not os.path.lexists(cand):
                     return cand
@@ -1517,14 +1729,16 @@ class SSHConnection:
             perms, _, _, _, size, mon, day, t, name = parts
             if name in (".", ".."):
                 continue
-            items.append({
-                "name": name,
-                "is_dir": perms[0] == "d",
-                "is_link": perms[0] == "l",
-                "size": int(size) if size.isdigit() else 0,
-                "mtime": f"{mon} {day} {t}",
-                "mtime_epoch": SSHConnection._ls_epoch(mon, day, t),
-            })
+            items.append(
+                {
+                    "name": name,
+                    "is_dir": perms[0] == "d",
+                    "is_link": perms[0] == "l",
+                    "size": int(size) if size.isdigit() else 0,
+                    "mtime": f"{mon} {day} {t}",
+                    "mtime_epoch": SSHConnection._ls_epoch(mon, day, t),
+                }
+            )
         return items
 
     @staticmethod
@@ -1537,9 +1751,15 @@ class SSHConnection:
     @staticmethod
     def _mux_dead(err):
         low = (err or "").lower()
-        return any(s in low for s in (
-            "connection closed", "control socket", "packet_write", "broken pipe",
-        ))
+        return any(
+            s in low
+            for s in (
+                "connection closed",
+                "control socket",
+                "packet_write",
+                "broken pipe",
+            )
+        )
 
     @staticmethod
     def _needs_legacy(err):
@@ -1549,41 +1769,62 @@ class SSHConnection:
     @staticmethod
     def _clean_err(err):
         err = err or ""
-        lines = [l for l in err.splitlines() if not l.startswith("Warning: Permanently added")]
+        lines = [
+            l
+            for l in err.splitlines()
+            if not l.startswith("Warning: Permanently added")
+        ]
         return "\n".join(lines).strip()
 
     @staticmethod
     def friendly_error(err):
         low = err.lower()
         if "connection refused" in low:
-            return ("Connection refused",
-                    "No SSH server is running on that host.\n"
-                    "On macOS: System Settings → General → Sharing → turn on \"Remote Login\".\n"
-                    "On Linux: install and start openssh-server.")
+            return (
+                "Connection refused",
+                "No SSH server is running on that host.\n"
+                'On macOS: System Settings → General → Sharing → turn on "Remote Login".\n'
+                "On Linux: install and start openssh-server.",
+            )
         if "connection timed out" in low or "no route to host" in low:
-            return ("Host unreachable",
-                    "The host did not answer.\nCheck it is powered on, on the same network,\n"
-                    "and that no firewall blocks port 22.")
-        if "could not resolve hostname" in low or "temporary failure in name resolution" in low:
-            return ("Unknown host name",
-                    "The host name could not be resolved.\nUse its IP address instead.")
+            return (
+                "Host unreachable",
+                "The host did not answer.\nCheck it is powered on, on the same network,\n"
+                "and that no firewall blocks port 22.",
+            )
+        if (
+            "could not resolve hostname" in low
+            or "temporary failure in name resolution" in low
+        ):
+            return (
+                "Unknown host name",
+                "The host name could not be resolved.\nUse its IP address instead.",
+            )
         if "permission denied" in low:
-            return ("Wrong username or password",
-                    "The server rejected the login.\n"
-                    "• The username must match the account's short name on that machine (case-sensitive)\n"
-                    "• The password must be correct\n"
-                    "• The account must be allowed to log in via SSH")
+            return (
+                "Wrong username or password",
+                "The server rejected the login.\n"
+                "• The username must match the account's short name on that machine (case-sensitive)\n"
+                "• The password must be correct\n"
+                "• The account must be allowed to log in via SSH",
+            )
         if "too many authentication failures" in low:
-            return ("Too many SSH key attempts",
-                    "Your SSH agent has too many keys loaded.\nRetrying with password-only auth…")
+            return (
+                "Too many SSH key attempts",
+                "Your SSH agent has too many keys loaded.\nRetrying with password-only auth…",
+            )
         if "unable to negotiate" in low or "no matching" in low:
-            return ("Old SSH version on that host",
-                    "The host's SSH software is too old for this client.\n"
-                    "Retrying with legacy compatibility…")
+            return (
+                "Old SSH version on that host",
+                "The host's SSH software is too old for this client.\n"
+                "Retrying with legacy compatibility…",
+            )
         if "no such file or directory" in low or "cannot access" in low:
-            return ("Remote folder not found",
-                    "The remote folder does not exist or is not accessible.\n"
-                    "• If this is the user's home folder, it may be missing or on an unmounted disk\n"
-                    "  (check on that machine: open Terminal and run  ls ~ )\n"
-                    "• Otherwise check the path in the path bar")
+            return (
+                "Remote folder not found",
+                "The remote folder does not exist or is not accessible.\n"
+                "• If this is the user's home folder, it may be missing or on an unmounted disk\n"
+                "  (check on that machine: open Terminal and run  ls ~ )\n"
+                "• Otherwise check the path in the path bar",
+            )
         return ("Connection failed", err)

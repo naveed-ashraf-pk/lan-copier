@@ -1,7 +1,7 @@
 # lan-copier — Implementation Plan + Session Handoff (compacted)
 
-**Date:** 2026-08-25 (session 7: ⇄ side swap + export snapshot fixes; sessions 5–6 history below)
-**Status:** clean reimplementation of the UI layer is DONE and green. Legacy `ui.py`/`panes.py`/`profiles.py`/`tests/test_ui.py` have been **deleted** and backed up under `docs/old/legacy-ui/`. **Session 5** fixed duplicate-profile stacking (identity is the resolved remote hostname, schema v3). **Session 6** simplified the bars: each side is a single `EndpointBar` row *inside* its own side column above the `DirPane` (a display-only endpoint label + one popup-driven `conn_btn` that turns green when connected — no dropdown/edit/disconnect buttons), the `ConnectionDialog` popup is now the single place to pick This computer / a saved profile / a new SSH connection and to disconnect, and the DirPane filter/quick-select row moved back **above** the tree. **Session 7** added the ⇄ side swap (endpoint sessions exchange wholesale, see §2.2d) and fixed the export worker to use its snapshot connection. This doc is the **single authoritative handoff**: read it in any new session, then `python3 tests.py` to verify the baseline. Everything below is self-contained.
+**Date:** 2026-09-08 (session 8: destination disk space + source selection size hint, lazy folder sizes; sessions 5–7 history below)
+**Status:** clean reimplementation of the UI layer is DONE and green. Legacy `ui.py`/`panes.py`/`profiles.py`/`tests/test_ui.py` have been **deleted** and backed up under `docs/old/legacy-ui/`. **Session 5** fixed duplicate-profile stacking (identity is the resolved remote hostname, schema v3). **Session 6** simplified the bars: each side is a single `EndpointBar` row *inside* its own side column above the `DirPane` (a display-only endpoint label + one popup-driven `conn_btn` that turns green when connected — no dropdown/edit/disconnect buttons), the `ConnectionDialog` popup is now the single place to pick This computer / a saved profile / a new SSH connection and to disconnect, and the DirPane filter/quick-select row moved back **above** the tree. **Session 7** added the ⇄ side swap (endpoint sessions exchange wholesale, see §2.2d) and fixed the export worker to use its snapshot connection. **Session 8** added destination disk-space display + source selection-size hint + lazy folder sizes (see §2.2e; spec: `docs/disk-space-and-selection-hint.requirements.md`). This doc is the **single authoritative handoff**: read it in any new session, then `python3 tests.py` to verify the baseline. Everything below is self-contained.
 
 **Sibling docs:** `symmetric-endpoints-feature-plan.md` (original feature spec, §§1–15), `architecture-and-developer-guide.md`, `AGENTS.md`.
 
@@ -15,7 +15,7 @@
 
 ## 1. Current state — verified green this session
 
-Run `python3 tests.py` → **ALL TESTS PASSED** (12 unit test fns + `app smoke` + `app remote-dest smoke`).
+Run `python3 tests.py` → **ALL TESTS PASSED** (126 unit test fns + `app smoke` + `app remote-dest smoke`).
 
 ### 1.1 Repository layout (clean, post-cleanup)
 ```
@@ -123,6 +123,30 @@ Fixed (all active in the new code + regression-tested):
 Open/notes (not bugs, for review):
 - **`compare + filter`**: `_compare_done` iterates the base model (not the filtered view), so hidden rows ARE included in the selection; the "compare skips hidden rows" note in the older docs was inaccurate. No change needed.
 - **Windows SSH *source* copy — FIXED**: `ssh_transport._copy_tar` was issuing a POSIX `tar -C` command with no Windows (`tar.exe`) branch, so a Windows source → local dest folder transfer failed (`'LC_ALL' is not recognized...`). Now both `_copy_tar` and `transfer_engine._reader_cmd` share a single source of truth, `SSHConnection._tar_read_cmd(remote_path)`, which derives parent/name with the endpoint family and branches on `_os_windows()` (`ps_cmd.tar_read` tar.exe via `-EncodedCommand` vs `posix_cmd.tar_read_remote`). Regression: `test_copy_tar_windows_*` in tests/test_ssh.py.
+
+### 2.2e Session-8: destination disk space + source selection size hint (feature)
+
+Full spec: `docs/disk-space-and-selection-hint.requirements.md` (status → Implemented). Summary:
+
+- **Transport**: new `disk_space(path)` on the endpoint contract → `{"total","free"}` or `None`. Local: `shutil.disk_usage`; SSH POSIX: `df -B1 --output=size,used,avail` (GNU) / `df -k` (macOS); SSH Windows: `[IO.DriveInfo]`. Builders in `commands/posix.py` (`df_gnu`/`df_darwin`) and `commands/powershell.py` (`disk_space`). Tests: `test_cmd_*`, `test_disk_space_parse` (test_ssh), `test_local_disk_space`.
+- **`DirPane`**: the bottom summary is now a `status_row` horizontal box — left `summary` (hexpand) + `spinner` + `right_label` (`xalign=1`, optional pango color). New view methods: `set_right_label(text, color)`, `set_busy(active)` (spinner), `set_folder_size(name, st, failed)` (updates `COL_SIZE`/`COL_SIZE_TEXT`/`meta`/`folder_sizes`; `~` prefix for partial, em-dash kept on total failure), `folder_paths()`. New `human_size_compact()` (strips `.0 `). `clear()` resets the new state.
+- **`AppWindow`**:
+  - `_start_folder_size_calc(side)` — per-pane lazy recursive folder sizes after each listing (daemon `threading.Thread` + `BoundedSemaphore(2)` per side), tagged with the side's `_remote_req`/`_dest_req` so navigation/swap/disconnect drop stale results; results land in `_folder_size_landed` → `set_folder_size` + spinner + label refresh. Local-fallback via `commands.local.stat_bytes_files` when a dest paths through with no connection object.
+  - `_update_status_labels()` → `_update_source_hint()` (source right label: `Selected: X (N files)`, green/red vs. dest free; `~` + no color while sizes unknown or dest free unknown) and `_update_dest_space()` (dest right label: `X / Y free`, or `After copy: X / Y free` when items are selected, or `Disk space unavailable` on query failure). Colors use the existing `self._colors` palette (`done`/`failed`).
+  - **Net accounting** `_selection_totals()`: `net = Σ selected source sizes − Σ conflicting dest sizes` (states `same`/`differ`), negative allowed (overwrites free space → green), clamping projected free ≥ 0.
+  - `_dest_disk_space(req)` / `_query_disk` / `_disk_queried` + `_reuse_disk_cache()` — cached dest disk space, queried on every dest listing load (connect/navigate/refresh/transfer-complete/delete-complete) **except strict child drill-downs** (SSH prefix rule; local additionally requires matching `st_dev`). Same-path reloads re-query. Cache + failure flag cleared on disconnect and swap.
+  - `_on_disconnect` now also bumps `_remote_req`/`_dest_req` (stale calc results on a cleared pane).
+- **Tests**: `test_dirpane_status_row`, `test_dirpane_folder_size_update`, `test_selection_hint_and_dest_preview`, `test_selection_hint_no_dest_color`, `test_dest_disk_label_failure`, `test_disk_cache_reuse`, `test_folder_size_in_model_window`, `test_net_conflict_accounting` (all in `tests/test_app.py`).
+
+Open/notes (for review): SSH folder-size partial detection is still not implemented (doc F25) — `find` stderr is discarded, so a partially-failed remote walk reports a clean (undercounted) `{bytes, files}`. Local `stat_remote` now flags `partial` (see §2.2f). New real-host validation for `df`/`IO.DriveInfo` output parsing belongs in the normal real-host pass (§2.1).
+
+### 2.2f Session-8 follow-up: size-aware folder comparison
+
+Folder states now consider recursive sizes (spec §4.4 + `classify_items` row):
+- `classify_items` compares same-named dirs by `(size, files)` via `.get(..., 0)` (directories only; files stay size-only). At listing time folder sizes are unknown (0/0) so dirs start `same`.
+- `_reclassify_folder_state(name)` runs from `_folder_size_landed`: once *both* panes' `folder_sizes[name]` exist and are non-`failed`/non-`partial`, flips the shared `_states` + both summaries to `differ` when `(bytes, files)` disagree; identical stays `same`. Failed/partial sizes keep the conservative `same` (never flip on an undercount).
+- `LocalConnection.stat_remote` now flags `partial: True` when a file `getsize` fails or `os.walk` hits an unreadable dir (closes the agreed-but-deferred A9). SSH already surfaced failure as `None`→`failed`. Folder byte-count heuristic can't distinguish equal-size different-content folders (tree hashing out of scope).
+- Tests: `test_folder_state_by_size`, `test_folder_state_failed_is_conservative` (window), `test_local_stat_remote_partial` (local), `test_classify_items_full` dir cases.
 
 ### 2.3 Cleanup — DONE (session 4)
 Legacy `ui.py`, `panes.py`, root `profiles.py`, `tests/test_ui.py` deleted and archived under `docs/old/legacy-ui/` for reference. Remaining cleanup (only if desired, low priority): fold the `app/__init__.py` docstring to describe the package.

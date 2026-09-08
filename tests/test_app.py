@@ -1,5 +1,6 @@
 """Tests for the clean reimplementation (app/): profiles v2 and an AppWindow
 smoke (construct, browse a local source, transfer to a local destination)."""
+
 import os
 import sys
 import tempfile
@@ -16,10 +17,20 @@ from app.window import classify_items, LIGHT_COLORS, DARK_COLORS
 def _store_at(directory):
     p = profiles._fresh()
     p["profiles"] = {
-        "a@host": {"host": "host", "port": 22, "user": "a",
-                   "password": "pw", "remember": True},
-        "b@host": {"host": "h2", "port": 2222, "user": "b",
-                   "password": "", "remember": False},
+        "a@host": {
+            "host": "host",
+            "port": 22,
+            "user": "a",
+            "password": "pw",
+            "remember": True,
+        },
+        "b@host": {
+            "host": "h2",
+            "port": 2222,
+            "user": "b",
+            "password": "",
+            "remember": False,
+        },
     }
     profiles.remember_side(p, "source", "a@host")
     return p
@@ -57,15 +68,21 @@ def test_autosave_profile_no_duplicate():
     # Reconnecting to an already-saved endpoint must refresh the existing
     # profile, not stack up "user@host 2" duplicates every time.
     import app.window as W
+
     prof_dir = tempfile.mkdtemp(prefix="prof-")
     orig = profiles._path
     profiles._path = lambda: os.path.join(prof_dir, "profiles.json")
     win = None
     try:
         win = W.AppWindow()
-        params = {"host": "act", "port": 22, "user": "bob",
-                  "password": "", "remember": False,
-                  "name": "bob@act"}
+        params = {
+            "host": "act",
+            "port": 22,
+            "user": "bob",
+            "password": "",
+            "remember": False,
+            "name": "bob@act",
+        }
         win._autosave_profile("source", params, hostname="macbook")
         names1 = profiles.names(profiles.load())
         assert names1 == ["bob@act"], names1
@@ -89,13 +106,25 @@ def test_merge_duplicates_report():
     # Pre-v3 files may contain "name 2/3..." rows for the same machine; merging
     # must collapse them onto one entry and keep the last side selection sane.
     store = profiles._fresh()
-    base = {"host": "169.254.x", "port": 22, "user": "n",
-            "hostname": "macbook", "password": "888", "remember": True}
+    base = {
+        "host": "169.254.x",
+        "port": 22,
+        "user": "n",
+        "hostname": "macbook",
+        "password": "888",
+        "remember": True,
+    }
     store["profiles"]["@macbook"] = dict(base)
     store["profiles"]["@macbook 2"] = dict(base)
     store["profiles"]["@macbook 3"] = dict(base)
-    store["profiles"]["@other"] = {"host": "h2", "port": 22, "user": "n",
-                                   "hostname": "", "password": "", "remember": False}
+    store["profiles"]["@other"] = {
+        "host": "h2",
+        "port": 22,
+        "user": "n",
+        "hostname": "",
+        "password": "",
+        "remember": False,
+    }
     store["last"]["source_profile"] = "@macbook 2"
     removed = profiles.merge_duplicates(store)
     assert removed == 2, removed
@@ -104,12 +133,16 @@ def test_merge_duplicates_report():
 
 
 def test_classify_app():
-    remote = [{"name": "r.txt", "is_dir": False, "size": 5},
-              {"name": "both", "is_dir": False, "size": 5},
-              {"name": "fold", "is_dir": True, "size": 0}]
-    local = [{"name": "both", "is_dir": False, "size": 9},
-             {"name": "fold", "is_dir": True, "size": 0},
-             {"name": "l.txt", "is_dir": False, "size": 7}]
+    remote = [
+        {"name": "r.txt", "is_dir": False, "size": 5},
+        {"name": "both", "is_dir": False, "size": 5},
+        {"name": "fold", "is_dir": True, "size": 0},
+    ]
+    local = [
+        {"name": "both", "is_dir": False, "size": 9},
+        {"name": "fold", "is_dir": True, "size": 0},
+        {"name": "l.txt", "is_dir": False, "size": 7},
+    ]
     st = classify_items(remote, local)
     assert st["r.txt"] == "missing"
     assert st["both"] == "differ"
@@ -118,30 +151,51 @@ def test_classify_app():
 
 
 def test_classify_items_full():
-    remote = [{"name": "only-r.txt", "is_dir": False, "size": 10},
-              {"name": "diff.bin", "is_dir": False, "size": 100},
-              {"name": "same.bin", "is_dir": False, "size": 50},
-              {"name": "dir-both", "is_dir": True, "size": 0},
-              {"name": "type-clash", "is_dir": False, "size": 5},
-              {"name": "case.bin", "is_dir": False, "size": 7}]
-    local = [{"name": "diff.bin", "is_dir": False, "size": 90},
-             {"name": "same.bin", "is_dir": False, "size": 50},
-             {"name": "dir-both", "is_dir": True, "size": 0},
-             {"name": "type-clash", "is_dir": True, "size": 0},
-             {"name": "only-l.txt", "is_dir": False, "size": 3},
-             {"name": "CASE.bin", "is_dir": False, "size": 7}]
+    remote = [
+        {"name": "only-r.txt", "is_dir": False, "size": 10},
+        {"name": "diff.bin", "is_dir": False, "size": 100},
+        {"name": "same.bin", "is_dir": False, "size": 50},
+        {"name": "dir-both", "is_dir": True, "size": 0, "files": 0},
+        {"name": "dir-diff", "is_dir": True, "size": 100, "files": 3},
+        {"name": "dir-bytes-eq-files-diff", "is_dir": True, "size": 10, "files": 1},
+        {"name": "dir-no-files-key", "is_dir": True, "size": 0},
+        {"name": "type-clash", "is_dir": False, "size": 5},
+        {"name": "case.bin", "is_dir": False, "size": 7},
+    ]
+    local = [
+        {"name": "diff.bin", "is_dir": False, "size": 90},
+        {"name": "same.bin", "is_dir": False, "size": 50},
+        {"name": "dir-both", "is_dir": True, "size": 0, "files": 0},
+        {"name": "dir-diff", "is_dir": True, "size": 90, "files": 3},
+        {"name": "dir-bytes-eq-files-diff", "is_dir": True, "size": 10, "files": 2},
+        {"name": "dir-no-files-key", "is_dir": True, "size": 0},
+        {"name": "type-clash", "is_dir": True, "size": 0},
+        {"name": "only-l.txt", "is_dir": False, "size": 3},
+        {"name": "CASE.bin", "is_dir": False, "size": 7},
+    ]
     st = classify_items(remote, local)
     assert st["only-r.txt"] == "missing"
     assert st["diff.bin"] == "differ"
     assert st["same.bin"] == "same"
-    assert st["dir-both"] == "same", "folders compare by kind, not size"
+    assert st["dir-both"] == "same", "equal recursive size + file count -> same"
+    assert st["dir-diff"] == "differ", "folders compare by recursive size"
+    assert st["dir-bytes-eq-files-diff"] == "differ", (
+        "equal bytes but different file count -> differ"
+    )
+    assert st["dir-no-files-key"] == "same", (
+        "dirs without a files key compare by size only (missing key tolerated)"
+    )
     assert st["type-clash"] == "conflict"
     assert st["only-l.txt"] == "extra"
     assert st["case.bin"] == "missing", "case-sensitive: CASE.bin is a different name"
     assert st["CASE.bin"] == "extra"
     assert classify_items([], []) == {}
-    assert classify_items([{"name": "a", "is_dir": False, "size": 1}], []) == {"a": "missing"}
-    assert classify_items([], [{"name": "a", "is_dir": False, "size": 1}]) == {"a": "extra"}
+    assert classify_items([{"name": "a", "is_dir": False, "size": 1}], []) == {
+        "a": "missing"
+    }
+    assert classify_items([], [{"name": "a", "is_dir": False, "size": 1}]) == {
+        "a": "extra"
+    }
 
 
 def test_endpoint_bar_open_visibility():
@@ -151,6 +205,7 @@ def test_endpoint_bar_open_visibility():
     if Gtk is None:
         return
     from app.widgets.endpoint import EndpointBar
+
     local = EndpointBar("SRC", callbacks={})
     local.set_connected(object(), "local", is_local=True)
     assert local.open_btn.get_visible(), "Open must show for a connected local source"
@@ -160,7 +215,9 @@ def test_endpoint_bar_open_visibility():
     ssh.set_disconnected()
     assert not ssh.open_btn.get_visible(), "Open must hide while disconnected"
     ssh.set_connected(object(), "local", is_local=True)
-    assert ssh.open_btn.get_visible(), "Open must show for a connected local destination"
+    assert ssh.open_btn.get_visible(), (
+        "Open must show for a connected local destination"
+    )
 
 
 def test_endpoint_bar_pick_folder_visibility():
@@ -170,15 +227,20 @@ def test_endpoint_bar_pick_folder_visibility():
     if Gtk is None:
         return
     from app.widgets.endpoint import EndpointBar
+
     bar = EndpointBar("SRC", callbacks={})
     bar.set_disconnected()
     assert not bar.browse_btn.get_visible(), "pick-folder must hide while disconnected"
     bar.set_connected(object(), "ssh", is_local=False)
     assert not bar.browse_btn.get_visible(), "pick-folder must hide for SSH"
     bar.set_connected(object(), "local", is_local=True)
-    assert bar.browse_btn.get_visible(), "pick-folder must show for a connected local endpoint"
+    assert bar.browse_btn.get_visible(), (
+        "pick-folder must show for a connected local endpoint"
+    )
     bar.set_disconnected()
-    assert not bar.browse_btn.get_visible(), "pick-folder must hide again after disconnect"
+    assert not bar.browse_btn.get_visible(), (
+        "pick-folder must hide again after disconnect"
+    )
 
 
 def test_window_browse_wiring():
@@ -190,8 +252,10 @@ def test_window_browse_wiring():
     routed = {}
     from app.widgets.endpoint import EndpointBar
     from unittest.mock import patch
-    src = EndpointBar("SRC", callbacks={"browse": lambda bar: routed.setdefault(
-        "src", (bar is None))})
+
+    src = EndpointBar(
+        "SRC", callbacks={"browse": lambda bar: routed.setdefault("src", (bar is None))}
+    )
     src.browse_btn.clicked()
     assert "src" in routed, "pick-folder click must emit the browse callback"
 
@@ -200,6 +264,7 @@ def test_window_log_colors():
     # Error lines must carry the log_err tag, soft problems log_warn, and
     # normal lines none (no tag) — all detected from the message text.
     from app.window import AppWindow
+
     assert AppWindow._log_tag("FAILED: x → y (perm)") == "log_err"
     assert AppWindow._log_tag("Got error in copy") == "log_err"
     assert AppWindow._log_tag("Could not save profile: boom") == "log_warn"
@@ -217,12 +282,14 @@ def test_endpoint_bar_single_button():
     if Gtk is None:
         return
     from app.widgets.endpoint import EndpointBar
+
     bar = EndpointBar("SRC", callbacks={})
     sc = bar.conn_btn.get_style_context()
     assert not sc.has_class("suggested-action"), "must start neutral"
     assert bar.conn_btn.get_label() == "Connect…"
-    assert not hasattr(bar, "endpoint") and not hasattr(bar, "edit_btn"), \
+    assert not hasattr(bar, "endpoint") and not hasattr(bar, "edit_btn"), (
         "no dropdown or edit button anymore"
+    )
     bar.set_connecting("Connecting…")
     assert bar.conn_btn.get_label() == "Connecting…"
     assert not bar.conn_btn.get_sensitive(), "connecting button must be disabled"
@@ -250,11 +317,16 @@ def test_connection_dialog_collect_modes():
         return
     from app.widgets.dialog import ConnectionDialog, NEW_ROW
     import app.profiles as profiles
-    profile = {"host": "srv", "port": 22, "user": "bob",
-               "password": "pw", "remember": True}
+
+    profile = {
+        "host": "srv",
+        "port": 22,
+        "user": "bob",
+        "password": "pw",
+        "remember": True,
+    }
     win = Gtk.Window()
-    dlg = ConnectionDialog(win, "Connect Source",
-                           profiles_data={"bob@srv": profile})
+    dlg = ConnectionDialog(win, "Connect Source", profiles_data={"bob@srv": profile})
     try:
         # default: This computer selected (fresh dialog with no prior state)
         assert dlg._kind == profiles.THIS
@@ -265,9 +337,17 @@ def test_connection_dialog_collect_modes():
         dlg.host.get_child().set_text("newhost")
         dlg.user.set_text("alice")
         dlg.name.set_text("alice@newhost")
-        assert dlg.collect() == {"mode": "ssh", "params": {
-            "host": "newhost", "port": 22, "user": "alice",
-            "password": "", "remember": False, "name": "alice@newhost"}}
+        assert dlg.collect() == {
+            "mode": "ssh",
+            "params": {
+                "host": "newhost",
+                "port": 22,
+                "user": "alice",
+                "password": "",
+                "remember": False,
+                "name": "alice@newhost",
+            },
+        }
         # switch back to This computer
         dlg._set_kind_active(profiles.THIS)
         assert dlg.collect() == {"mode": "local"}
@@ -290,8 +370,15 @@ def test_dirpane_sortable_columns():
     Gtk = _gtk()
     if Gtk is None:
         return
-    from app.widgets.dirpane import DirPane, COL_NAME, COL_SIZE_TEXT, COL_TYPE, \
-        COL_MTIME_TEXT, COL_STATE_SORT
+    from app.widgets.dirpane import (
+        DirPane,
+        COL_NAME,
+        COL_SIZE_TEXT,
+        COL_TYPE,
+        COL_MTIME_TEXT,
+        COL_STATE_SORT,
+    )
+
     pane = DirPane(callbacks={})
     by_title = {c.get_title(): c for c in pane.tree.get_columns()}
     expected = {
@@ -302,8 +389,9 @@ def test_dirpane_sortable_columns():
         "State": COL_STATE_SORT,
     }
     for title, cid in expected.items():
-        assert by_title[title].get_sort_column_id() == cid, \
+        assert by_title[title].get_sort_column_id() == cid, (
             f"{title} header must be sortable (sort id {cid})"
+        )
 
 
 def test_dirpane_sort_by_size_and_mtime():
@@ -315,34 +403,551 @@ def test_dirpane_sort_by_size_and_mtime():
     if Gtk is None:
         return
     from app.widgets.dirpane import DirPane, COL_SIZE_TEXT, COL_MTIME_TEXT, COL_NAME
+
     pane = DirPane(callbacks={})
-    pane.set_items([
-        {"name": "folder", "is_dir": True, "size": 50, "mtime_epoch": 1},
-        {"name": "z.bin", "is_dir": False, "size": 1_000_000_000, "mtime_epoch": 2},
-        {"name": "a.bin", "is_dir": False, "size": 10, "mtime_epoch": 200},
-        {"name": "m.bin", "is_dir": False, "size": 100, "mtime_epoch": 3},
-    ], "/x")
+    pane.set_items(
+        [
+            {"name": "folder", "is_dir": True, "size": 50, "mtime_epoch": 1},
+            {"name": "z.bin", "is_dir": False, "size": 1_000_000_000, "mtime_epoch": 2},
+            {"name": "a.bin", "is_dir": False, "size": 10, "mtime_epoch": 200},
+            {"name": "m.bin", "is_dir": False, "size": 100, "mtime_epoch": 3},
+        ],
+        "/x",
+    )
 
     def rows():
         n = pane.sort.iter_n_children(None)
-        return [pane.sort.get_value(pane.sort.get_iter((i,)), COL_NAME)
-                for i in range(n)]
+        return [
+            pane.sort.get_value(pane.sort.get_iter((i,)), COL_NAME) for i in range(n)
+        ]
 
     pane.sort.set_sort_column_id(COL_SIZE_TEXT, Gtk.SortType.ASCENDING)
-    assert rows() == ["folder", "a.bin", "m.bin", "z.bin"], \
+    assert rows() == ["folder", "a.bin", "m.bin", "z.bin"], (
         "size sort must keep folder first then order by raw bytes"
+    )
 
     pane.sort.set_sort_column_id(COL_MTIME_TEXT, Gtk.SortType.ASCENDING)
-    assert rows() == ["folder", "z.bin", "m.bin", "a.bin"], \
+    assert rows() == ["folder", "z.bin", "m.bin", "a.bin"], (
         "mtime sort must keep folder first then order by raw epoch"
+    )
+
+
+def test_dirpane_status_row():
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.widgets.dirpane import DirPane, human_size_compact
+
+    pane = DirPane(callbacks={})
+    assert pane.right_label.get_text() == ""
+    assert not pane.spinner.get_visible()
+    pane.set_right_label("hello")
+    assert pane.right_label.get_text() == "hello"
+    pane.set_right_label("c", color="#ff5555")
+    assert pane.right_label.get_use_markup(), "colored label must use pango markup"
+    assert "ff5555" in pane.right_label.get_label()
+    pane.set_right_label("plain")
+    assert not pane.right_label.get_use_markup(), "plain text label must not use markup"
+    assert pane.right_label.get_text() == "plain"
+    pane.set_busy(True)
+    assert pane.spinner.get_visible()
+    pane.set_busy(False)
+    assert not pane.spinner.get_visible()
+    pane.clear()
+    assert pane.right_label.get_text() == ""
+    assert human_size_compact(256 * 1024**3) == "256 GB"
+    assert human_size_compact(1234) == "1.2 KB"
+
+
+def test_dirpane_folder_size_update():
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.widgets.dirpane import DirPane, COL_SIZE_TEXT, COL_SIZE, COL_NAME
+
+    pane = DirPane(callbacks={})
+    pane.set_items(
+        [
+            {"name": "folder", "is_dir": True, "size": 0, "mtime_epoch": 1},
+            {"name": "a.bin", "is_dir": False, "size": 10, "mtime_epoch": 2},
+        ],
+        "/x",
+    )
+    # locate the folder row by name within the model
+    name_col = next(i for i, r in enumerate(pane.model) if r[COL_NAME] == "folder")
+    assert pane.model[name_col][COL_SIZE_TEXT] == "—", "folders start with an em-dash"
+    pane.set_folder_size("folder", {"bytes": 5 * 1024**2, "files": 2})
+    assert pane.model[name_col][COL_SIZE_TEXT] == "5.0 MB"
+    assert pane.model[name_col][COL_SIZE] == 5 * 1024**2
+    assert pane.meta["folder"]["size"] == 5 * 1024**2
+    assert pane.folder_sizes["folder"]["bytes"] == 5 * 1024**2
+    pane.set_folder_size("folder", {"bytes": 3, "files": 1, "partial": True})
+    assert pane.model[name_col][COL_SIZE_TEXT].startswith("~")
+    pane.set_folder_size("folder", None, failed=True)
+    assert pane.model[name_col][COL_SIZE_TEXT].startswith("~"), (
+        "a failed calc marks the folder but keeps the last provisional size"
+    )
+    pane.set_folder_size("folder", None, failed=False)
+    assert pane.folder_sizes["folder"].get("failed"), (
+        "a None result with failed=False also marks failed"
+    )
+    pane.set_folder_size(
+        "nowhere",
+        {"bytes": 1, "files": 1},
+    )
+    assert "nowhere" not in pane.folder_sizes, "unknown names are ignored"
+
+
+def test_selection_hint_and_dest_preview():
+    # Selecting an item in the source shows "Selected: X (N files)" on the
+    # source and "After copy: X / Y free" on the destination, both colored by
+    # whether the net (conflict-adjusted) size fits the free space. Deselecting
+    # hides the hint and reverts the destination label to plain free space.
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+
+    src = tempfile.mkdtemp(prefix="hint-src-")
+    dst = tempfile.mkdtemp(prefix="hint-dst-")
+    open(os.path.join(src, "a.txt"), "w").write("abcd")
+    win = None
+    try:
+        win = AppWindow()
+        win.conn = LocalConnection()
+        win.dest_conn = LocalConnection()
+
+        def pump_until(pred, secs=20):
+            end = time.monotonic() + secs
+            while time.monotonic() < end and not pred():
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+            assert pred(), "condition not met in time"
+
+        win._load_source(src)
+        win._load_dest(dst)
+        pump_until(
+            lambda: "a.txt" in win.source_pane.meta and win.dest_current_path == dst
+        )
+        win._disk_cache = {"path": win.dest_current_path, "total": 1000, "free": 100}
+
+        def check(pane, name, on=True):
+            for i in range(len(pane.model)):
+                if pane.model[i][1] == name:
+                    pane._check(pane.model[i], on)
+                    return
+            raise AssertionError(f"{name} row missing")
+
+        check(win.source_pane, "a.txt")
+        assert win.source_pane.right_label.get_text() == "Selected: 4 B (1 files)"
+        assert win.source_pane.right_label.get_use_markup(), "fits -> green"
+        assert win.dest_pane.right_label.get_text() == "After copy: 96 B / 1000 B free"
+        assert win.dest_pane.right_label.get_use_markup()
+
+        check(win.source_pane, "a.txt", on=False)
+        assert win.source_pane.right_label.get_text() == "", "hint hidden when empty"
+        assert win.dest_pane.right_label.get_text() == "100 B / 1000 B free"
+        assert not win.dest_pane.right_label.get_use_markup(), "plain label, no color"
+
+        # won't fit -> red, and the projected free space never goes negative
+        win._disk_cache = {"path": win.dest_current_path, "total": 1000, "free": 1}
+        check(win.source_pane, "a.txt", on=True)
+        assert win.dest_pane.right_label.get_text() == "After copy: 0 B / 1000 B free"
+        assert win._colors["failed"][1:] in win.dest_pane.right_label.get_label()
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+        shutil.rmtree(src, ignore_errors=True)
+        shutil.rmtree(dst, ignore_errors=True)
+
+
+def test_selection_hint_no_dest_color():
+    # With the destination disconnected, the hint shows size/count only, in
+    # the plain foreground (no color coding possible without dest free space).
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+
+    src = tempfile.mkdtemp(prefix="hint2-src-")
+    open(os.path.join(src, "a.txt"), "w").write("abcd")
+    win = None
+    try:
+        win = AppWindow()
+        win.conn = LocalConnection()
+
+        def pump_until(pred, secs=20):
+            end = time.monotonic() + secs
+            while time.monotonic() < end and not pred():
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+            assert pred(), "condition not met in time"
+
+        win._load_source(src)
+        pump_until(lambda: win.source_pane.meta)
+        row = next(r for r in win.source_pane.model if r[1] == "a.txt")
+        win.source_pane._check(row, True)
+        txt = win.source_pane.right_label.get_text()
+        assert txt == "Selected: 4 B (1 files)", txt
+        assert not win.source_pane.right_label.get_use_markup(), (
+            "no color when destination is unavailable"
+        )
+        assert win.dest_pane.right_label.get_text() == "", (
+            "dest label hidden with no connection"
+        )
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+        shutil.rmtree(src, ignore_errors=True)
+
+
+def test_dest_disk_label_failure():
+    # A failing disk-space query shows "Disk space unavailable" and logs it;
+    # the label is retried on the next listing load (same-path reload re-queries).
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+
+    dst = tempfile.mkdtemp(prefix="dskf-")
+    win = None
+    try:
+        win = AppWindow()
+        win.dest_conn = LocalConnection()
+        win.dest_conn.disk_space = lambda path: None
+
+        def pump_until(pred, secs=20):
+            end = time.monotonic() + secs
+            while time.monotonic() < end and not pred():
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+            assert pred(), "condition not met in time"
+
+        win._load_dest(dst)
+        pump_until(lambda: win._disk_failed)
+        assert win.dest_pane.right_label.get_text() == "Disk space unavailable"
+        buf = win.log.get_buffer()
+        log = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
+        assert "disk space" in log.lower(), log
+
+        # a later successful query clears the failure state
+        win.dest_conn.disk_space = lambda path: {"total": 2048, "free": 1024}
+        win._load_dest(dst)
+        pump_until(lambda: win._disk_cache is not None)
+        assert not win._disk_failed
+        assert win.dest_pane.right_label.get_text() == "1.0 KB / 2 KB free"
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+        shutil.rmtree(dst, ignore_errors=True)
+
+
+def test_disk_cache_reuse():
+    # Drill-down navigation to a strict child reuses the cached dest disk
+    # space; same-path reloads and non-children re-query. Local endpoints also
+    # verify they stay on the same device (st_dev).
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+
+    win = None
+    try:
+        win = AppWindow()
+        win.dest_conn = type("S", (), {"kind": "ssh"})()
+        win._disk_cache = {"path": "/a/b", "total": 100, "free": 50}
+        win.dest_current_path = "/a/b/c"
+        assert win._reuse_disk_cache(), "SSH child drill-down reuses"
+        win.dest_current_path = "/a/b"
+        assert not win._reuse_disk_cache(), "same path re-queries"
+        win.dest_current_path = "/a/x"
+        assert not win._reuse_disk_cache(), "non-child re-queries"
+
+        d = tempfile.mkdtemp(prefix="dsk-cache-")
+        try:
+            sub = os.path.join(d, "sub")
+            os.makedirs(sub)
+            win.dest_conn = LocalConnection()
+            win._disk_cache = {"path": d, "total": 100, "free": 50}
+            win.dest_current_path = sub
+            assert win._reuse_disk_cache(), "local child on same device reuses"
+            win.dest_current_path = os.path.join(d, "nope")
+            assert not win._reuse_disk_cache(), "missing child re-queries"
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+
+
+def test_folder_size_in_model_window():
+    # Lazy recursive folder sizes land in the model Size column via the window,
+    # replacing the em-dash, and the spinner finishes hidden.
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+    from app.widgets.dirpane import COL_SIZE_TEXT
+
+    src = tempfile.mkdtemp(prefix="fsz-src-")
+    os.makedirs(os.path.join(src, "sub"))
+    with open(os.path.join(src, "sub", "inner.txt"), "w") as f:
+        f.write("0123456789")
+
+    win = None
+    try:
+        win = AppWindow()
+        win.conn = LocalConnection()
+
+        def pump_until(pred, secs=20):
+            end = time.monotonic() + secs
+            while time.monotonic() < end and not pred():
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+            assert pred(), "condition not met in time"
+
+        win._load_source(src)
+        pump_until(lambda: win.source_pane.folder_sizes.get("sub"))
+        fs = win.source_pane.folder_sizes["sub"]
+        assert fs["bytes"] == 10, fs
+        name_col = next(i for i, r in enumerate(win.source_pane.model) if r[1] == "sub")
+        assert win.source_pane.model[name_col][COL_SIZE_TEXT] != "—"
+        pump_until(lambda: not win.source_pane.spinner.get_visible())
+        assert not win.source_pane.spinner.get_visible()
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+        shutil.rmtree(src, ignore_errors=True)
+
+
+def test_folder_state_by_size():
+    # Once both sides' recursive sizes land, a same-named folder with different
+    # (bytes, files) flips from provisional `same` to `differ` in the shared
+    # state dict + both summaries; an identical folder stays `same`.
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+
+    src = tempfile.mkdtemp(prefix="fst-src-")
+    dst = tempfile.mkdtemp(prefix="fst-dst-")
+
+    def mk(base, folder, contents):
+        os.makedirs(os.path.join(base, folder))
+        for name, data in contents.items():
+            with open(os.path.join(base, folder, name), "w") as f:
+                f.write(data)
+
+    mk(src, "same-f", {"a.txt": "xx"})
+    mk(dst, "same-f", {"a.txt": "xx"})
+    mk(src, "diff-f", {"big.bin": "x" * 100})
+    mk(dst, "diff-f", {"big.bin": "x" * 50})
+    mk(src, "files-f", {"a.txt": "xx"})
+    mk(dst, "files-f", {"a.txt": "xx", "empty.bin": ""})
+
+    win = None
+    try:
+        win = AppWindow()
+        win.conn = LocalConnection()
+        win.dest_conn = LocalConnection()
+
+        def pump_until(pred, secs=20):
+            end = time.monotonic() + secs
+            while time.monotonic() < end and not pred():
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+            assert pred(), "condition not met in time"
+
+        win._load_source(src)
+        win._load_dest(dst)
+        pump_until(
+            lambda: (
+                win.source_pane.folder_sizes.get("diff-f")
+                and win.dest_pane.folder_sizes.get("diff-f")
+            )
+        )
+        pump_until(
+            lambda: (
+                win.source_pane.folder_sizes.get("files-f")
+                and win.dest_pane.folder_sizes.get("files-f")
+            )
+        )
+        pump_until(
+            lambda: (
+                win.source_pane.folder_sizes.get("same-f")
+                and win.dest_pane.folder_sizes.get("same-f")
+            )
+        )
+
+        assert win.source_pane.folder_sizes["diff-f"]["bytes"] == 100
+        assert win.dest_pane.folder_sizes["diff-f"]["bytes"] == 50
+        assert win._states["diff-f"] == "differ", win._states
+        assert win.source_pane.states["diff-f"] == "differ"
+        assert win.dest_pane.states["diff-f"] == "differ"
+
+        assert win._states["files-f"] == "differ", (
+            "equal bytes, different file count -> differ"
+        )
+
+        assert win._states["same-f"] == "same", (
+            "equal recursive (bytes, files) stays same"
+        )
+
+        assert "1 same" in win.source_pane.summary.get_text(), (
+            win.source_pane.summary.get_text()
+        )
+        assert "2 differ" in win.source_pane.summary.get_text(), (
+            win.source_pane.summary.get_text()
+        )
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+        shutil.rmtree(src, ignore_errors=True)
+        shutil.rmtree(dst, ignore_errors=True)
+
+
+def test_folder_state_failed_is_conservative():
+    # If only one side's size can be computed, the folder stays `same` — the
+    # comparison needs both complete results and never flips on an undercount.
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+
+    src = tempfile.mkdtemp(prefix="fstc-src-")
+    dst = tempfile.mkdtemp(prefix="fstc-dst-")
+
+    def mk(base, folder, contents):
+        os.makedirs(os.path.join(base, folder))
+        for name, data in contents.items():
+            with open(os.path.join(base, folder, name), "w") as f:
+                f.write(data)
+
+    mk(src, "unknown-f", {"a.txt": "x" * 100})
+    mk(dst, "unknown-f", {"a.txt": "y" * 50})
+
+    win = None
+    try:
+        win = AppWindow()
+        win.conn = LocalConnection()
+        win.dest_conn = LocalConnection()
+
+        def pump_until(pred, secs=20):
+            end = time.monotonic() + secs
+            while time.monotonic() < end and not pred():
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+            assert pred(), "condition not met in time"
+
+        orig_stat = win._stat_folder
+
+        def stat_side(side, path):
+            if side == "dest":
+                return None
+            return orig_stat(side, path)
+
+        win._stat_folder = stat_side
+        win._load_source(src)
+        win._load_dest(dst)
+        pump_until(lambda: win.source_pane.folder_sizes.get("unknown-f"))
+        assert win.dest_pane.folder_sizes.get("unknown-f", {}).get("failed"), (
+            "dest size calc must fail by stub"
+        )
+        pump_until(lambda: not win.source_pane.spinner.get_visible())
+        assert win._states["unknown-f"] == "same", (
+            "folder with a failed size calc stays same (cannot size-compare)"
+        )
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+        shutil.rmtree(src, ignore_errors=True)
+        shutil.rmtree(dst, ignore_errors=True)
+
+
+def test_net_conflict_accounting():
+    # Replacing a larger destination file with a smaller source one yields a
+    # negative net, so the projected free space grows and stays green.
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+
+    M = 1024 * 1024
+    src = tempfile.mkdtemp(prefix="net-src-")
+    dst = tempfile.mkdtemp(prefix="net-dst-")
+    with open(os.path.join(src, "big.bin"), "wb") as f:
+        f.write(b"x" * (3 * M))
+    with open(os.path.join(dst, "big.bin"), "wb") as f:
+        f.write(b"y" * (5 * M))
+    win = None
+    try:
+        win = AppWindow()
+        win.conn = LocalConnection()
+        win.dest_conn = LocalConnection()
+
+        def pump_until(pred, secs=20):
+            end = time.monotonic() + secs
+            while time.monotonic() < end and not pred():
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+            assert pred(), "condition not met in time"
+
+        win._load_source(src)
+        win._load_dest(dst)
+        pump_until(lambda: win.source_pane.meta and win.dest_pane.meta)
+        win._disk_cache = {
+            "path": win.dest_current_path,
+            "total": 200 * 1024**3,
+            "free": 100 * M,
+        }
+        row = next(r for r in win.source_pane.model if r[1] == "big.bin")
+        win.source_pane._check(row, True)
+        # net = 3MB - 5MB = -2MB -> projected free = 102MB
+        assert win.dest_pane.right_label.get_text() == (
+            "After copy: 102.0 MB / 200 GB free"
+        )
+        assert win._colors["done"][1:] in win.dest_pane.right_label.get_label()
+        assert win._colors["done"][1:] in win.source_pane.right_label.get_label()
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+        shutil.rmtree(src, ignore_errors=True)
+        shutil.rmtree(dst, ignore_errors=True)
 
 
 def test_color_palettes():
     # Every state keyword + every transfer status must have a color in both
     # palettes, and the dark theme must differ (this drives dir-row + status
     # readability on dark backgrounds).
-    keys = {"missing", "differ", "conflict", "same", "extra",
-            "running", "done", "failed", "queued", "skipped", "cancelled", "paused"}
+    keys = {
+        "missing",
+        "differ",
+        "conflict",
+        "same",
+        "extra",
+        "running",
+        "done",
+        "failed",
+        "queued",
+        "skipped",
+        "cancelled",
+        "paused",
+    }
     assert set(LIGHT_COLORS) == keys, "light palette must cover every state/status"
     assert set(DARK_COLORS) == keys, "dark palette must cover every state/status"
     assert DARK_COLORS != LIGHT_COLORS, "dark palette must differ from light"
@@ -367,6 +972,7 @@ def test_swap_sides_travels_with_conn():
         return
     from app.window import AppWindow
     from local_transport import LocalConnection
+
     src = tempfile.mkdtemp(prefix="swap-src-")
     dst = tempfile.mkdtemp(prefix="swap-dst-")
     open(os.path.join(src, "s.txt"), "w").write("s")
@@ -391,13 +997,14 @@ def test_swap_sides_travels_with_conn():
         assert win.dest_current_path == src
         assert win._side_profile["source"] == "prof-b"
         assert win._side_profile["dest"] == "prof-a"
-        assert win._remote_req > req0 and win._dest_req > dreq0, \
+        assert win._remote_req > req0 and win._dest_req > dreq0, (
             "in-flight listings must be invalidated"
+        )
 
         end = time.monotonic() + 20
         while time.monotonic() < end and (
-                "d.txt" not in win.source_pane.meta
-                or "s.txt" not in win.dest_pane.meta):
+            "d.txt" not in win.source_pane.meta or "s.txt" not in win.dest_pane.meta
+        ):
             while Gtk.events_pending():
                 Gtk.main_iteration()
             time.sleep(0.005)
@@ -423,6 +1030,7 @@ def test_swap_confirm_and_clear():
         return
     from app.window import AppWindow
     from local_transport import LocalConnection
+
     src = tempfile.mkdtemp(prefix="swap-c-src-")
     dst = tempfile.mkdtemp(prefix="swap-c-dst-")
     open(os.path.join(src, "s.txt"), "w").write("s")
@@ -459,8 +1067,9 @@ def test_swap_confirm_and_clear():
 
         win._confirm_swap = lambda a, b: False
         win._on_swap_sides()
-        assert win.conn is conn_before and win.current_path == src, \
+        assert win.conn is conn_before and win.current_path == src, (
             "cancelling must not swap"
+        )
         assert len(win.source_pane.selected) == 1, "cancel keeps the selection"
 
         asked = []
@@ -486,6 +1095,7 @@ def test_swap_partial_moves_single_connection():
         return
     from app.window import AppWindow
     from local_transport import LocalConnection
+
     dst = tempfile.mkdtemp(prefix="swap-p-dst-")
     open(os.path.join(dst, "d.txt"), "w").write("d")
     win = None
@@ -523,6 +1133,7 @@ def test_swap_blocked_while_transfers_active():
     if Gtk is None:
         return
     from app.window import AppWindow, Transfer
+
     win = None
     try:
         win = AppWindow()
@@ -561,6 +1172,16 @@ ALL_TESTS = (
     test_window_log_colors,
     test_dirpane_sortable_columns,
     test_dirpane_sort_by_size_and_mtime,
+    test_dirpane_status_row,
+    test_dirpane_folder_size_update,
+    test_selection_hint_and_dest_preview,
+    test_selection_hint_no_dest_color,
+    test_dest_disk_label_failure,
+    test_disk_cache_reuse,
+    test_folder_size_in_model_window,
+    test_folder_state_by_size,
+    test_folder_state_failed_is_conservative,
+    test_net_conflict_accounting,
     test_connection_dialog_collect_modes,
     test_swap_sides_travels_with_conn,
     test_swap_confirm_and_clear,
@@ -572,6 +1193,7 @@ ALL_TESTS = (
 def _gtk():
     try:
         import gi
+
         gi.require_version("Gtk", "3.0")
         from gi.repository import Gtk
     except Exception as e:
@@ -637,13 +1259,19 @@ def _smoke_ui():
         pump(0.1)
         assert "Transfer Selected (1)" in win.transfer_btn.get_label()
         assert len(win.sel_model) == 1, "Selected page must show the checked item"
-        assert win.source_bar.delete_btn.get_sensitive(), "delete button must enable with a selection"
-        assert "Delete (1)" in win.source_bar.delete_btn.get_label(), "delete button must show the selected count"
+        assert win.source_bar.delete_btn.get_sensitive(), (
+            "delete button must enable with a selection"
+        )
+        assert "Delete (1)" in win.source_bar.delete_btn.get_label(), (
+            "delete button must show the selected count"
+        )
         win.source_pane._check(target_row, False)
         pump(0.1)
         assert "Transfer Selected (0)" in win.transfer_btn.get_label()
         assert len(win.sel_model) == 0, "unchecking must clear the Selected page"
-        assert not win.source_bar.delete_btn.get_sensitive(), "delete button must disable with no selection"
+        assert not win.source_bar.delete_btn.get_sensitive(), (
+            "delete button must disable with no selection"
+        )
 
         # re-select for the actual transfer
         win.source_pane._check(target_row, True)
@@ -654,13 +1282,16 @@ def _smoke_ui():
         t = win._transfers[0]
         pump_until(lambda: t.status in ("done", "failed"), 30)
         assert t.status == "done", (t.status, t.err)
-        assert os.path.isfile(os.path.join(dst, "file.txt")), "file must land in destination"
+        assert os.path.isfile(os.path.join(dst, "file.txt")), (
+            "file must land in destination"
+        )
 
         # Destination panel must auto-reload after the transfer completes
         # (debounced), so the copied item appears in the dest listing.
         pump(0.4)
-        assert "file.txt" in win.dest_pane.meta, \
+        assert "file.txt" in win.dest_pane.meta, (
             "destination panel must refresh after transfer finishes"
+        )
 
         # DirPane.clear() must drop rows/selection/meta; the path field belongs
         # to the EndpointBar, which the window blanks on disconnect.
@@ -689,6 +1320,7 @@ def _smoke_remote_dest():
     exercising the real transfer_engine.run() remote-destination path."""
     try:
         import gi
+
         gi.require_version("Gtk", "3.0")
         from gi.repository import Gtk
         from app.window import AppWindow
@@ -727,15 +1359,24 @@ def _smoke_remote_dest():
         win.dest_current_path = root
         win._on_transfer(None)
         end = time.monotonic() + 40
-        while time.monotonic() < end and win._transfers and any(
-                t.status not in ("done", "failed") for t in win._transfers):
+        while (
+            time.monotonic() < end
+            and win._transfers
+            and any(t.status not in ("done", "failed") for t in win._transfers)
+        ):
             pump()
         assert win._transfers, "no transfer enqueued"
         for t in win._transfers:
             assert t.status == "done", (t.name, t.status, t.err)
-        assert os.path.isfile(os.path.join(root, "file.txt")), "file must land on remote dest"
-        assert os.path.isfile(os.path.join(root, "sub", "inner.txt")), "dir must land on remote dest"
-        assert not [p for p in os.listdir(root) if "lan-copier-part" in p], "no stale part left"
+        assert os.path.isfile(os.path.join(root, "file.txt")), (
+            "file must land on remote dest"
+        )
+        assert os.path.isfile(os.path.join(root, "sub", "inner.txt")), (
+            "dir must land on remote dest"
+        )
+        assert not [p for p in os.listdir(root) if "lan-copier-part" in p], (
+            "no stale part left"
+        )
         win._on_destroy(None)
         win = None
         print("app remote-dest smoke OK")

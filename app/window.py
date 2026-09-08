@@ -10,6 +10,7 @@ This is a fresh reimplementation. Legacy `ui.py` stays as reference until
 """
 
 import gi
+
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GLib, Pango
 
@@ -21,12 +22,17 @@ import time
 import app.profiles as profiles
 from app.widgets.dialog import ConnectionDialog, RESP_DISCONNECT
 from app.widgets.endpoint import EndpointBar
-from app.widgets.dirpane import DirPane, human_size
+from app.widgets.dirpane import DirPane, human_size, human_size_compact
+import commands.local as local_cmd
 import commands.paths as rp
 from discovery import discover
 from local_transport import LocalConnection, dir_list, delete_local_item
 from ssh_transport import (
-    SSHConnection, POLICY_ASK, POLICY_OVERWRITE, POLICY_KEEP_BOTH, POLICY_SKIP,
+    SSHConnection,
+    POLICY_ASK,
+    POLICY_OVERWRITE,
+    POLICY_KEEP_BOTH,
+    POLICY_SKIP,
 )
 import transfer_engine
 import tree_exporter
@@ -60,6 +66,12 @@ def markup_escape(text):
 
 
 def classify_items(remote_items, local_items):
+    """Per-name states for a source<->destination listing.
+
+    Same-named entries compare by size; directories additionally compare their
+    recursive file count, so a folder whose (bytes, files) differ is `differ`
+    rather than `same`. `files` defaults to 0 so callers that know only the
+    byte total (e.g. a fresh listing pre-folder-size-calc) stay safe."""
     remote = {it["name"]: it for it in remote_items}
     local = {it["name"]: it for it in local_items}
     states = {}
@@ -72,7 +84,10 @@ def classify_items(remote_items, local_items):
         elif r["is_dir"] != l["is_dir"]:
             states[name] = "conflict"
         elif r["is_dir"]:
-            states[name] = "same"
+            same = r.get("size", 0) == l.get("size", 0) and r.get("files", 0) == l.get(
+                "files", 0
+            )
+            states[name] = "same" if same else "differ"
         elif r["size"] == l["size"]:
             states[name] = "same"
         else:
@@ -86,16 +101,34 @@ POLICY_CHOICES = [
     ("Keep both", POLICY_KEEP_BOTH),
     ("Skip", POLICY_SKIP),
 ]
-LIGHT_COLORS = {"missing": "#c62828", "differ": "#ef6c00", "conflict": "#ad1457",
-                "same": "#2e7d32", "extra": "#1565c0",
-                "running": "#1565c0", "done": "#2e7d32", "failed": "#c62828",
-                "queued": "#757575", "skipped": "#757575", "cancelled": "#757575",
-                "paused": "#f9a825"}
-DARK_COLORS = {"missing": "#ff5252", "differ": "#ffab40", "conflict": "#ff4081",
-               "same": "#81c784", "extra": "#40c4ff",
-               "running": "#40c4ff", "done": "#81c784", "failed": "#ff5252",
-               "queued": "#9e9e9e", "skipped": "#9e9e9e", "cancelled": "#9e9e9e",
-               "paused": "#ffd54f"}
+LIGHT_COLORS = {
+    "missing": "#c62828",
+    "differ": "#ef6c00",
+    "conflict": "#ad1457",
+    "same": "#2e7d32",
+    "extra": "#1565c0",
+    "running": "#1565c0",
+    "done": "#2e7d32",
+    "failed": "#c62828",
+    "queued": "#757575",
+    "skipped": "#757575",
+    "cancelled": "#757575",
+    "paused": "#f9a825",
+}
+DARK_COLORS = {
+    "missing": "#ff5252",
+    "differ": "#ffab40",
+    "conflict": "#ff4081",
+    "same": "#81c784",
+    "extra": "#40c4ff",
+    "running": "#40c4ff",
+    "done": "#81c784",
+    "failed": "#ff5252",
+    "queued": "#9e9e9e",
+    "skipped": "#9e9e9e",
+    "cancelled": "#9e9e9e",
+    "paused": "#ffd54f",
+}
 _TERMINAL = ("done", "skipped", "failed", "cancelled")
 
 
@@ -112,10 +145,32 @@ def _is_dark_theme():
 
 
 class Transfer:
-    __slots__ = ("id", "name", "src", "dest", "batch", "is_dir", "dest_conn",
-                 "method", "policy", "status", "part", "total", "files",
-                 "files_done", "current", "last", "last_t", "speed", "eta",
-                 "final", "err", "procs", "paused", "removed")
+    __slots__ = (
+        "id",
+        "name",
+        "src",
+        "dest",
+        "batch",
+        "is_dir",
+        "dest_conn",
+        "method",
+        "policy",
+        "status",
+        "part",
+        "total",
+        "files",
+        "files_done",
+        "current",
+        "last",
+        "last_t",
+        "speed",
+        "eta",
+        "final",
+        "err",
+        "procs",
+        "paused",
+        "removed",
+    )
 
     def __init__(self, name, src, dest, batch=0, is_dir=False):
         self.id = None
@@ -184,6 +239,14 @@ class AppWindow(Gtk.Window):
         self._active_dialog = None
         self._hosts = []
 
+        self._disk_cache = None  # {"path","total","free"} for the dest pane
+        self._disk_failed = False
+        self._pending_sizes = {"source": 0, "dest": 0}
+        self._size_sem = {
+            "source": threading.BoundedSemaphore(2),
+            "dest": threading.BoundedSemaphore(2),
+        }
+
         self._colors = DARK_COLORS if _is_dark_theme() else LIGHT_COLORS
         self.transfers_page = None
 
@@ -199,22 +262,28 @@ class AppWindow(Gtk.Window):
         vbox.set_border_width(6)
         self.add(vbox)
 
-        self.source_bar = EndpointBar("SOURCE", callbacks={
-            "connect": self._on_connect_clicked,
-            "navigate": self._on_navigate,
-            "open": self._on_open,
-            "browse": self._on_pick_folder,
-            "export": self._on_export,
-            "delete": self._on_delete,
-        })
-        self.dest_bar = EndpointBar("DESTINATION", callbacks={
-            "connect": self._on_connect_clicked,
-            "navigate": self._on_navigate,
-            "open": self._on_open,
-            "browse": self._on_pick_folder,
-            "export": self._on_export,
-            "delete": self._on_delete,
-        })
+        self.source_bar = EndpointBar(
+            "SOURCE",
+            callbacks={
+                "connect": self._on_connect_clicked,
+                "navigate": self._on_navigate,
+                "open": self._on_open,
+                "browse": self._on_pick_folder,
+                "export": self._on_export,
+                "delete": self._on_delete,
+            },
+        )
+        self.dest_bar = EndpointBar(
+            "DESTINATION",
+            callbacks={
+                "connect": self._on_connect_clicked,
+                "navigate": self._on_navigate,
+                "open": self._on_open,
+                "browse": self._on_pick_folder,
+                "export": self._on_export,
+                "delete": self._on_delete,
+            },
+        )
 
         self.main_stack = Gtk.Stack()
         browser = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -222,13 +291,27 @@ class AppWindow(Gtk.Window):
         side_paned = Gtk.Paned()
         side_paned.set_orientation(Gtk.Orientation.HORIZONTAL)
         self.source_pane = DirPane(
-            callbacks={"navigate": self._on_navigate,
-                        "selection_changed": self._refresh_sel})
+            callbacks={
+                "navigate": self._on_navigate,
+                "selection_changed": self._refresh_sel,
+            }
+        )
         self.dest_pane = DirPane(
-            callbacks={"navigate": self._on_navigate,
-                        "selection_changed": self._refresh_sel})
+            callbacks={
+                "navigate": self._on_navigate,
+                "selection_changed": self._refresh_sel,
+            }
+        )
         self.source_pane.set_state_colors(self._colors)
         self.dest_pane.set_state_colors(self._colors)
+        self.source_pane.right_label.set_tooltip_text(
+            "Total size of selected items; green = fits in the destination, "
+            "red = does not"
+        )
+        self.dest_pane.right_label.set_tooltip_text(
+            "Destination free space; after selecting source items it previews "
+            "the space left after the copy"
+        )
         source_side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         source_side.pack_start(self.source_bar, False, False, 0)
         source_side.pack_start(self.source_pane, True, True, 0)
@@ -239,8 +322,9 @@ class AppWindow(Gtk.Window):
         # destination column so it rides along with the paned divider (GTK3
         # Paned cannot host children inside its gutter).
         self.swap_btn = Gtk.Button(label="⇄")
-        self.swap_btn.set_tooltip_text("Swap source ↔ destination "
-                                       "(each side keeps its current folder)")
+        self.swap_btn.set_tooltip_text(
+            "Swap source ↔ destination (each side keeps its current folder)"
+        )
         self.swap_btn.connect("clicked", lambda b: self._on_swap_sides())
         swap_strip = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         swap_strip.pack_start(self.swap_btn, False, False, 4)
@@ -270,9 +354,16 @@ class AppWindow(Gtk.Window):
         self._bottom_vpaned_set = False
         self.bottom_vpaned.connect("size-allocate", self._init_bottom_vpaned)
         browser.pack_start(self.bottom_vpaned, True, True, 0)
-        browser.pack_start(Gtk.Label(
-            label="Colours: red=missing · orange=size differs · magenta=file/folder clash · "
-                  "green=same · blue=destination only", xalign=0), False, False, 0)
+        browser.pack_start(
+            Gtk.Label(
+                label="Colours: red=missing · orange=size differs · magenta=file/folder clash · "
+                "green=same · blue=destination only",
+                xalign=0,
+            ),
+            False,
+            False,
+            0,
+        )
 
         self.main_stack.add_named(browser, "browser")
         self.main_stack.add_named(self._build_delete_progress_page(), "delete_progress")
@@ -316,9 +407,15 @@ class AppWindow(Gtk.Window):
         page.pack_start(bar, False, False, 0)
         self.sel_model = Gtk.ListStore(str, str, str)
         self.sel_tree = Gtk.TreeView(model=self.sel_model)
-        self.sel_tree.append_column(Gtk.TreeViewColumn("Item", Gtk.CellRendererText(), text=0))
-        self.sel_tree.append_column(Gtk.TreeViewColumn("Source", Gtk.CellRendererText(), text=1))
-        self.sel_tree.append_column(Gtk.TreeViewColumn("To", Gtk.CellRendererText(), text=2))
+        self.sel_tree.append_column(
+            Gtk.TreeViewColumn("Item", Gtk.CellRendererText(), text=0)
+        )
+        self.sel_tree.append_column(
+            Gtk.TreeViewColumn("Source", Gtk.CellRendererText(), text=1)
+        )
+        self.sel_tree.append_column(
+            Gtk.TreeViewColumn("To", Gtk.CellRendererText(), text=2)
+        )
         sw = Gtk.ScrolledWindow()
         sw.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         sw.set_min_content_height(120)
@@ -335,7 +432,8 @@ class AppWindow(Gtk.Window):
             self.policy_combo.append_text(label)
         self.policy_combo.set_active(0)
         self.policy_combo.set_tooltip_text(
-            "Ask (smart): same size = skip silently, different = ask once per batch")
+            "Ask (smart): same size = skip silently, different = ask once per batch"
+        )
         header.pack_start(self.policy_combo, False, False, 0)
         header.pack_start(Gtk.Label(label="Parallel:"), False, False, 0)
         self.parallel_spin = Gtk.SpinButton.new_with_range(1, 8, 1)
@@ -354,7 +452,9 @@ class AppWindow(Gtk.Window):
         header.pack_end(self.clear_finished_btn, False, False, 0)
         page.pack_start(header, False, False, 0)
 
-        self.transfers_model = Gtk.ListStore(int, str, str, int, str, str, str, str, bool, str, str, str)
+        self.transfers_model = Gtk.ListStore(
+            int, str, str, int, str, str, str, str, bool, str, str, str
+        )
         self.transfers_tree = Gtk.TreeView(model=self.transfers_model)
         self.transfers_tree.get_selection().set_mode(Gtk.SelectionMode.NONE)
         self.transfers_tree.set_tooltip_column(10)
@@ -365,7 +465,9 @@ class AppWindow(Gtk.Window):
         name_col.set_min_width(160)
         self.transfers_tree.append_column(name_col)
         pr = Gtk.CellRendererProgress()
-        self.transfers_tree.append_column(Gtk.TreeViewColumn("Progress", pr, value=3, text=2))
+        self.transfers_tree.append_column(
+            Gtk.TreeViewColumn("Progress", pr, value=3, text=2)
+        )
         sp = Gtk.CellRendererText()
         sp.set_property("xalign", 1.0)
         speed_col = Gtk.TreeViewColumn("Speed", sp, text=4)
@@ -428,6 +530,7 @@ class AppWindow(Gtk.Window):
             except Exception:
                 hosts = []
             GLib.idle_add(self._hosts_ready, hosts, None)
+
         threading.Thread(target=work, daemon=True).start()
 
     def _hosts_ready(self, hosts, dialog):
@@ -445,6 +548,7 @@ class AppWindow(Gtk.Window):
             except Exception:
                 hosts = []
             GLib.idle_add(self._hosts_ready, hosts, dialog)
+
         threading.Thread(target=work, daemon=True).start()
 
     # ======================================================================
@@ -461,20 +565,32 @@ class AppWindow(Gtk.Window):
         store = profiles.load()
         pdata = {n: profiles.get(store, n) for n in profiles.names(store)}
         name = self._side_profile.get(side) if connected else None
-        mode = "local" if (connected and getattr(conn, "kind", None) != "ssh") else "ssh"
+        mode = (
+            "local" if (connected and getattr(conn, "kind", None) != "ssh") else "ssh"
+        )
         initial = {}
         if connected and mode == "ssh":
             initial = {
-                "host": getattr(conn, "host", ""), "port": getattr(conn, "port", 22),
+                "host": getattr(conn, "host", ""),
+                "port": getattr(conn, "port", 22),
                 "user": getattr(conn, "user", ""),
-                "password": getattr(conn, "password", "") if getattr(conn, "remember", False) else "",
+                "password": getattr(conn, "password", "")
+                if getattr(conn, "remember", False)
+                else "",
                 "remember": bool(getattr(conn, "remember", False)),
             }
             if name is not None:
                 initial["name"] = name
-        dlg = ConnectionDialog(self, f"Connect {side.title()}", hosts=self._hosts,
-                               profiles_data=pdata, initial=initial, name=name,
-                               connected=connected, mode=mode)
+        dlg = ConnectionDialog(
+            self,
+            f"Connect {side.title()}",
+            hosts=self._hosts,
+            profiles_data=pdata,
+            initial=initial,
+            name=name,
+            connected=connected,
+            mode=mode,
+        )
         dlg.set_on_discover(self._dialog_discovery)
         self._active_dialog = dlg
         resp = dlg.run()
@@ -519,7 +635,9 @@ class AppWindow(Gtk.Window):
                 name = f"{base} {i}"
                 break
         store["profiles"][name] = {
-            "host": host, "port": port, "user": user,
+            "host": host,
+            "port": port,
+            "user": user,
             "hostname": str(hostname or ""),
             "password": password,
             "remember": remember,
@@ -560,9 +678,14 @@ class AppWindow(Gtk.Window):
         low = msg.lower()
         if msg.startswith("FAILED:") or " error" in low or low.startswith("error"):
             return "log_err"
-        if (low.startswith("could not") or "couldn't" in low or "failed" in low
-                or low.startswith("retrying") or low.startswith("skip")
-                or " not found" in low):
+        if (
+            low.startswith("could not")
+            or "couldn't" in low
+            or "failed" in low
+            or low.startswith("retrying")
+            or low.startswith("skip")
+            or " not found" in low
+        ):
             return "log_warn"
         return None
 
@@ -573,14 +696,16 @@ class AppWindow(Gtk.Window):
         if self._destroyed:
             return False
         import shlex
+
         ts = time.strftime("%H:%M:%S")
         self._append(f"{ts}  $ {shlex.join(argv)}")
         if rc == 0:
             self._append(f"{ts}  → rc=0")
         else:
             detail = (err or "").strip().replace("\n", " | ")[:300]
-            self._append(f"{ts}  → rc={rc}" + (f": {detail}" if detail else ""),
-                         "log_warn")
+            self._append(
+                f"{ts}  → rc={rc}" + (f": {detail}" if detail else ""), "log_warn"
+            )
         return False
 
     def _track_dialog(self, dlg):
@@ -602,8 +727,13 @@ class AppWindow(Gtk.Window):
         self._dialogs = []
 
     def _show_error(self, title, detail="", kind=Gtk.MessageType.ERROR):
-        dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=kind,
-                                buttons=Gtk.ButtonsType.OK, text=title)
+        dlg = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=kind,
+            buttons=Gtk.ButtonsType.OK,
+            text=title,
+        )
         if detail:
             dlg.format_secondary_text(markup_escape(detail))
         self._track_dialog(dlg)
@@ -643,7 +773,9 @@ class AppWindow(Gtk.Window):
             hostname = host
             try:
                 conn = SSHConnection(host, port, user, password)
-                conn.on_command = lambda argv, rc, err: GLib.idle_add(self._cmd_done, argv, rc, err)
+                conn.on_command = lambda argv, rc, err: GLib.idle_add(
+                    self._cmd_done, argv, rc, err
+                )
                 home = conn.home_dir()
                 try:
                     hostname = conn.hostname() or host
@@ -655,6 +787,7 @@ class AppWindow(Gtk.Window):
                     conn.host, conn.port, conn.user = host, port, user
                     conn.last_error = str(e)
             GLib.idle_add(self._connected_side, side, conn, home, params, hostname)
+
         threading.Thread(target=work, daemon=True).start()
 
     def _cmd_done(self, argv, rc, err):
@@ -673,7 +806,9 @@ class AppWindow(Gtk.Window):
         if side == "source":
             self.conn = conn
             bar.set_connected(conn, label, is_local=local)
-            self._log(f"Connected to {conn.user}@{conn.host}:{conn.port} — home: {home}")
+            self._log(
+                f"Connected to {conn.user}@{conn.host}:{conn.port} — home: {home}"
+            )
             self._load_source(home)
         else:
             self.dest_conn = conn
@@ -693,6 +828,7 @@ class AppWindow(Gtk.Window):
         if side == "source":
             self.conn = None
             self.current_path = None
+            self._remote_req += 1
             self.source_pane.clear()
             self.source_pane.set_controls_visible(False)
             if self.dest_conn is None:
@@ -700,6 +836,9 @@ class AppWindow(Gtk.Window):
         else:
             self.dest_conn = None
             self.dest_current_path = None
+            self._dest_req += 1
+            self._disk_cache = None
+            self._disk_failed = False
             self.dest_pane.clear()
             self.dest_pane.set_controls_visible(False)
         bar.set_disconnected()
@@ -713,7 +852,8 @@ class AppWindow(Gtk.Window):
 
     def _transfer_or_delete_active(self):
         return self._delete_in_progress or any(
-            t.status in ("queued", "running", "paused") for t in self._transfers)
+            t.status in ("queued", "running", "paused") for t in self._transfers
+        )
 
     def _swap_endpoints(self):
         """Exchange the two sides' endpoint sessions. Per-side session state is
@@ -721,14 +861,17 @@ class AppWindow(Gtk.Window):
         when adding a per-side field, swap it here too."""
         self.conn, self.dest_conn = self.dest_conn, self.conn
         self.current_path, self.dest_current_path = (
-            self.dest_current_path, self.current_path)
+            self.dest_current_path,
+            self.current_path,
+        )
         self._side_profile["source"], self._side_profile["dest"] = (
-            self._side_profile.get("dest"), self._side_profile.get("source"))
+            self._side_profile.get("dest"),
+            self._side_profile.get("source"),
+        )
 
     def _on_swap_sides(self):
         if self._transfer_or_delete_active():
-            self._show_error(
-                "Cannot swap while a transfer or deletion is in progress.")
+            self._show_error("Cannot swap while a transfer or deletion is in progress.")
             return
         n_source = len(self.source_pane.selected)
         n_dest = len(self.dest_pane.selected)
@@ -739,6 +882,8 @@ class AppWindow(Gtk.Window):
         self._remote_req += 1
         self._dest_req += 1
         self._swap_endpoints()
+        self._disk_cache = None
+        self._disk_failed = False
         self.source_pane.clear()
         self.dest_pane.clear()
         self._rebind_side("source")
@@ -772,21 +917,22 @@ class AppWindow(Gtk.Window):
 
     def _confirm_swap(self, n_source, n_dest):
         dlg = Gtk.MessageDialog(
-            transient_for=self, modal=True,
+            transient_for=self,
+            modal=True,
             message_type=Gtk.MessageType.QUESTION,
-            buttons=Gtk.ButtonsType.NONE, text="Swap source and destination?")
+            buttons=Gtk.ButtonsType.NONE,
+            text="Swap source and destination?",
+        )
         counts = []
         if n_source:
             counts.append(f"{n_source} on the source side")
         if n_dest:
             counts.append(f"{n_dest} on the destination side")
-        detail = ("The two connections exchange places; "
-                  "each keeps its current folder.")
+        detail = "The two connections exchange places; each keeps its current folder."
         if counts:
             detail += f"\n\nChecked items will be unchecked ({', '.join(counts)})."
         dlg.format_secondary_text(markup_escape(detail))
-        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
-                        "Swap", Gtk.ResponseType.OK)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Swap", Gtk.ResponseType.OK)
         dlg.set_default_response(Gtk.ResponseType.OK)
         self._track_dialog(dlg)
         dlg.show_all()
@@ -800,7 +946,11 @@ class AppWindow(Gtk.Window):
     # ======================================================================
 
     def _on_navigate(self, widget, where, path=None):
-        side = "dest" if (widget is self.dest_bar or widget is self.dest_pane) else "source"
+        side = (
+            "dest"
+            if (widget is self.dest_bar or widget is self.dest_pane)
+            else "source"
+        )
         bar = self.source_bar if side == "source" else self.dest_bar
         conn = self.conn if side == "source" else self.dest_conn
         cur_path = self.current_path if side == "source" else self.dest_current_path
@@ -857,6 +1007,7 @@ class AppWindow(Gtk.Window):
                 if hasattr(self.conn, "last_error"):
                     self.conn.last_error = str(e)
             GLib.idle_add(self._source_loaded, req, path, items)
+
         threading.Thread(target=work, daemon=True).start()
 
     def _source_loaded(self, req, path, items):
@@ -874,6 +1025,7 @@ class AppWindow(Gtk.Window):
         self.source_pane.set_controls_visible(True)
         self._recompute_states()
         self._refresh_sel()
+        self._start_folder_size_calc("source")
         return False
 
     def _load_dest(self, path=None):
@@ -890,6 +1042,7 @@ class AppWindow(Gtk.Window):
             except Exception as e:
                 items = None
             GLib.idle_add(self._dest_loaded, req, target, items)
+
         threading.Thread(target=work, daemon=True).start()
 
     def _dest_loaded(self, req, path, items):
@@ -908,10 +1061,15 @@ class AppWindow(Gtk.Window):
         self.dest_pane.set_controls_visible(True)
         self._recompute_states()
         self._refresh_sel()
+        self._start_folder_size_calc("dest")
+        self._dest_disk_space(req)
         return False
 
     def _dest_is_ssh(self):
-        return self.dest_conn is not None and getattr(self.dest_conn, "kind", None) == "ssh"
+        return (
+            self.dest_conn is not None
+            and getattr(self.dest_conn, "kind", None) == "ssh"
+        )
 
     def _on_pick_folder(self, bar=None):
         """📁 pick-folder action: route to the correct side. Empty for a remote
@@ -924,8 +1082,9 @@ class AppWindow(Gtk.Window):
     def _on_dest_browse(self, bar=None, _dlg=None):
         if self._dest_is_ssh():
             return
-        path = self._choose_folder("Choose destination folder",
-                                   self.dest_bar.path_entry.get_text() or "~")
+        path = self._choose_folder(
+            "Choose destination folder", self.dest_bar.path_entry.get_text() or "~"
+        )
         if not path:
             return
         if not isinstance(self.dest_conn, LocalConnection):
@@ -939,8 +1098,9 @@ class AppWindow(Gtk.Window):
     def _on_source_browse(self, bar=None, _dlg=None):
         if getattr(self.conn, "kind", None) == "ssh":
             return
-        path = self._choose_folder("Choose a local source folder",
-                                   self.current_path or "~")
+        path = self._choose_folder(
+            "Choose a local source folder", self.current_path or "~"
+        )
         if not path:
             return
         self.conn = LocalConnection()
@@ -952,9 +1112,16 @@ class AppWindow(Gtk.Window):
         if Gtk is None:
             return None
         dlg = Gtk.FileChooserDialog(
-            title=title, transient_for=self, action=Gtk.FileChooserAction.SELECT_FOLDER,
-            buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-                     Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+            title=title,
+            transient_for=self,
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+            buttons=(
+                Gtk.STOCK_CANCEL,
+                Gtk.ResponseType.CANCEL,
+                Gtk.STOCK_OPEN,
+                Gtk.ResponseType.OK,
+            ),
+        )
         base = os.path.expanduser(initial)
         if os.path.isdir(base):
             dlg.set_current_folder(base)
@@ -968,23 +1135,29 @@ class AppWindow(Gtk.Window):
     def _on_open(self, bar=None, _n=None):
         import subprocess
         import sys
+
         side = "dest" if bar is self.dest_bar else "source"
         cur_dir = self.dest_current_path if side == "dest" else self.current_path
         path = os.path.expanduser(cur_dir or "~")
         if not os.path.isdir(path):
             return
         try:
-            opener = {"darwin": ["open", path],
-                      "win32": ["explorer", path]}.get(sys.platform, ["xdg-open", path])
+            opener = {"darwin": ["open", path], "win32": ["explorer", path]}.get(
+                sys.platform, ["xdg-open", path]
+            )
             subprocess.Popen(opener)
         except Exception as e:
             self._log(f"Could not open: {e}")
 
     def _recompute_states(self):
-        src_items = [{"name": n, "is_dir": m["is_dir"], "size": m["size"]}
-                     for n, m in self.source_pane.meta.items()]
-        dst_items = [{"name": n, "is_dir": m["is_dir"], "size": m["size"]}
-                     for n, m in self.dest_pane.meta.items()]
+        src_items = [
+            {"name": n, "is_dir": m["is_dir"], "size": m["size"]}
+            for n, m in self.source_pane.meta.items()
+        ]
+        dst_items = [
+            {"name": n, "is_dir": m["is_dir"], "size": m["size"]}
+            for n, m in self.dest_pane.meta.items()
+        ]
         states = classify_items(src_items, dst_items)
         self._states = states
         self.source_pane.set_states(states)
@@ -996,10 +1169,14 @@ class AppWindow(Gtk.Window):
         counts = {k: 0 for k in ("missing", "differ", "conflict", "same", "extra")}
         for s in states.values():
             counts[s] += 1
+
         def fmt(m):
             return " · ".join(f"{counts[k]} {k}" for k in m if counts[k])
+
         self.source_pane.set_summary(fmt(("missing", "differ", "conflict", "same")))
-        self.dest_pane.set_summary(fmt(("missing", "differ", "conflict", "same", "extra")))
+        self.dest_pane.set_summary(
+            fmt(("missing", "differ", "conflict", "same", "extra"))
+        )
 
     # ======================================================================
     # Selection
@@ -1013,6 +1190,7 @@ class AppWindow(Gtk.Window):
         self.transfer_btn.set_label(f"▶ Transfer Selected ({n})")
         self.sel_tab_lbl.set_text(f"Selected ({n})")
         self._update_delete_buttons()
+        self._update_status_labels()
 
     def _clear_selection(self):
         for row in self.source_pane.model:
@@ -1023,9 +1201,263 @@ class AppWindow(Gtk.Window):
 
     def _update_delete_buttons(self):
         blocked = self._transfer_or_delete_active()
-        self.source_bar.set_delete_count(len(self.source_pane.selected), enabled=not blocked)
-        self.dest_bar.set_delete_count(len(self.dest_pane.selected), enabled=not blocked)
+        self.source_bar.set_delete_count(
+            len(self.source_pane.selected), enabled=not blocked
+        )
+        self.dest_bar.set_delete_count(
+            len(self.dest_pane.selected), enabled=not blocked
+        )
         self.swap_btn.set_sensitive(not blocked)
+
+    # ======================================================================
+    # Status-bar right labels: source selection hint + dest disk space
+    # ======================================================================
+
+    def _stat_conn(self, side):
+        return self.conn if side == "source" else self.dest_conn
+
+    def _stat_folder(self, side, path):
+        """Recursive size for one folder on either side. Falls back to the
+        local helper when a connected dest paths through without a connection
+        object (window-level code never calls os directly)."""
+        conn = self._stat_conn(side)
+        if conn is not None:
+            return conn.stat(path)
+        return local_cmd.stat_bytes_files(path)
+
+    def _start_folder_size_calc(self, side):
+        """Lazy recursive size calculation for the current listing's folders.
+        Bounded by a small per-side worker semaphore; results are tagged with
+        the side's listing request counter so navigation/swap/disconnect drop
+        stale landings."""
+        pane = self.source_pane if side == "source" else self.dest_pane
+        req = self._remote_req if side == "source" else self._dest_req
+        folders = pane.folder_paths()
+        if not folders:
+            pane.set_busy(False)
+            return
+        self._pending_sizes[side] = len(folders)
+        pane.set_busy(True)
+        sem = self._size_sem[side]
+
+        def run(name, full):
+            with sem:
+                try:
+                    st = self._stat_folder(side, full)
+                except Exception:
+                    st = None
+            GLib.idle_add(self._folder_size_landed, side, req, name, st)
+
+        for name, full in folders:
+            threading.Thread(target=run, args=(name, full), daemon=True).start()
+
+    def _folder_size_landed(self, side, req, name, st):
+        if self._destroyed:
+            return False
+        cur = self._remote_req if side == "source" else self._dest_req
+        if req != cur:
+            return False
+        pane = self.source_pane if side == "source" else self.dest_pane
+        self._pending_sizes[side] = max(0, self._pending_sizes[side] - 1)
+        if st is None:
+            self._log(f'Could not size folder "{name}"')
+            pane.set_folder_size(name, None, failed=True)
+        else:
+            if st.get("partial"):
+                self._log(f'Partial size for folder "{name}" (permission denied?)')
+            pane.set_folder_size(name, st)
+        self._reclassify_folder_state(name)
+        pane.set_busy(self._pending_sizes[side] > 0)
+        self._update_status_labels()
+        return False
+
+    def _reclassify_folder_state(self, name):
+        """Promote a same-named folder from provisional `same` to `differ` once
+        both sides' recursive sizes are known: same only when `(bytes, files)`
+        agree. Failed / partial results stay `same` (cannot size-compare an
+        undercount, so it keeps the conservative name-based state)."""
+        r = self.source_pane.meta.get(name)
+        l = self.dest_pane.meta.get(name)
+        if not (r and l) or not r["is_dir"] or r["is_dir"] != l["is_dir"]:
+            return
+        sf = self.source_pane.folder_sizes.get(name)
+        df = self.dest_pane.folder_sizes.get(name)
+        if not sf or not df:
+            return
+        if (
+            sf.get("failed")
+            or df.get("failed")
+            or sf.get("partial")
+            or df.get("partial")
+        ):
+            return
+        want = (
+            "same"
+            if (
+                sf.get("bytes", 0) == df.get("bytes", 0)
+                and sf.get("files", 0) == df.get("files", 0)
+            )
+            else "differ"
+        )
+        if self._states.get(name) == want:
+            return
+        self._states[name] = want
+        self.source_pane.set_states(self._states)
+        self.dest_pane.set_states(self._states)
+        self._summarise(
+            [
+                {"name": n, "is_dir": m["is_dir"], "size": m["size"]}
+                for n, m in self.source_pane.meta.items()
+            ],
+            [
+                {"name": n, "is_dir": m["is_dir"], "size": m["size"]}
+                for n, m in self.dest_pane.meta.items()
+            ],
+            self._states,
+        )
+
+    def _selection_totals(self):
+        """(src_total, net_needed, complete) for the current source selection.
+
+        net_needed = Σ selected source sizes − Σ conflicting destination sizes
+        (states "same"/"differ"). `complete` is False while any relevant folder
+        size is still unknown so the labels render a provisional "~"."""
+        src_total = 0
+        net = 0
+        complete = True
+        sel = self.source_pane.selected
+        for _, info in sel.items():
+            name = info["name"]
+            if info["is_dir"]:
+                fs = self.source_pane.folder_sizes.get(name)
+                if fs and not fs.get("failed"):
+                    src_total += fs.get("bytes", 0)
+                else:
+                    complete = False
+            else:
+                src_total += self.source_pane.meta.get(name, {}).get("size", 0) or 0
+        net = src_total
+        for _, info in sel.items():
+            name = info["name"]
+            if self._states.get(name) not in ("same", "differ"):
+                continue
+            dmeta = self.dest_pane.meta.get(name)
+            if not dmeta:
+                continue
+            if dmeta["is_dir"]:
+                dfs = self.dest_pane.folder_sizes.get(name)
+                if dfs and not dfs.get("failed"):
+                    net -= dfs.get("bytes", 0)
+                else:
+                    complete = False
+            else:
+                net -= dmeta.get("size", 0) or 0
+        return src_total, net, complete
+
+    def _update_status_labels(self):
+        self._update_source_hint()
+        self._update_dest_space()
+
+    def _update_source_hint(self):
+        pane = self.source_pane
+        if not pane.selected:
+            pane.set_right_label("")
+            return
+        src_total, net, complete = self._selection_totals()
+        count = len(pane.selected)
+        prefix = "~" if not complete else ""
+        text = f"Selected: {prefix}{human_size(src_total)} ({count} files)"
+        color = None
+        if complete and self._disk_cache is not None and not self._disk_failed:
+            color = (
+                self._colors["done"]
+                if net <= self._disk_cache["free"]
+                else self._colors["failed"]
+            )
+        pane.set_right_label(text, color=color)
+
+    def _update_dest_space(self):
+        pane = self.dest_pane
+        if self._disk_failed:
+            pane.set_right_label("Disk space unavailable")
+            return
+        if self._disk_cache is None:
+            pane.set_right_label("")
+            return
+        total = self._disk_cache["total"]
+        free = self._disk_cache["free"]
+        if not self.source_pane.selected:
+            pane.set_right_label(
+                f"{human_size(free)} / {human_size_compact(total)} free"
+            )
+            return
+        _, net, complete = self._selection_totals()
+        projected = max(0, free - net)
+        prefix = "~" if not complete else ""
+        color = None
+        if complete:
+            color = self._colors["done"] if net <= free else self._colors["failed"]
+        pane.set_right_label(
+            f"After copy: {prefix}{human_size(projected)} / "
+            f"{human_size_compact(total)} free",
+            color=color,
+        )
+
+    def _reuse_disk_cache(self):
+        """True when drill-down navigation can reuse the cached dest disk space
+        (strict child of the cached path; local additionally requires the same
+        device). Same-path reloads (refresh / transfer / delete / connect)
+        always re-query so free space reflects the real current state."""
+        cache = self._disk_cache
+        if not cache:
+            return False
+        cpath, cur = cache["path"], self.dest_current_path
+        if cur == cpath or not cur.startswith(cpath.rstrip("/") + "/"):
+            return False
+        if self._dest_is_ssh():
+            return True
+        try:
+            return os.stat(cur).st_dev == os.stat(cpath).st_dev
+        except OSError:
+            return False
+
+    def _dest_disk_space(self, req):
+        if not self.dest_current_path:
+            return
+        if self._reuse_disk_cache():
+            return
+        self._query_disk(req, self.dest_current_path)
+
+    def _query_disk(self, req, path):
+        def work():
+            try:
+                if self.dest_conn is not None:
+                    ds = self.dest_conn.disk_space(path)
+                else:
+                    ds = local_cmd.disk_space(path)
+            except Exception:
+                ds = None
+            GLib.idle_add(self._disk_queried, req, ds)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _disk_queried(self, req, ds):
+        if self._destroyed:
+            return False
+        if req != self._dest_req:
+            return False
+        if ds is None:
+            self._disk_failed = True
+            self._log(f'Could not read disk space for "{self.dest_current_path}"')
+        else:
+            self._disk_cache = {
+                "path": self.dest_current_path,
+                "total": ds["total"],
+                "free": ds["free"],
+            }
+            self._disk_failed = False
+        self._update_status_labels()
+        return False
 
     def _dest_exists(self, path):
         try:
@@ -1067,8 +1499,11 @@ class AppWindow(Gtk.Window):
         if not opts:
             return
         suggested = tree_exporter.suggest_export_filename(
-            context["host_info"]["host_name"], context["root_path"])
-        default_path = os.path.join(os.path.expanduser(self.dest_current_path or "~"), suggested)
+            context["host_info"]["host_name"], context["root_path"]
+        )
+        default_path = os.path.join(
+            os.path.expanduser(self.dest_current_path or "~"), suggested
+        )
         out_path = self._choose_save_path("Save export YAML", default_path)
         if not out_path:
             return
@@ -1078,22 +1513,44 @@ class AppWindow(Gtk.Window):
         if panel == "source":
             if self.conn is None:
                 return None
-            host_info = (tree_exporter.describe_local_host()
-                         if getattr(self.conn, "kind", None) != "ssh"
-                         else tree_exporter.describe_remote_host(self.conn))
-            return {"panel": "source", "conn": self.conn, "root_path": self.current_path,
-                    "selected_paths": sorted(self.source_pane.selected), "host_info": host_info}
+            host_info = (
+                tree_exporter.describe_local_host()
+                if getattr(self.conn, "kind", None) != "ssh"
+                else tree_exporter.describe_remote_host(self.conn)
+            )
+            return {
+                "panel": "source",
+                "conn": self.conn,
+                "root_path": self.current_path,
+                "selected_paths": sorted(self.source_pane.selected),
+                "host_info": host_info,
+            }
         root = self.dest_current_path or "~"
-        host_info = (tree_exporter.describe_remote_host(self.dest_conn)
-                     if self._dest_is_ssh() else tree_exporter.describe_local_host())
-        return {"panel": "dest", "conn": self.dest_conn, "root_path": root,
-                "selected_paths": sorted(self.dest_pane.selected), "host_info": host_info}
+        host_info = (
+            tree_exporter.describe_remote_host(self.dest_conn)
+            if self._dest_is_ssh()
+            else tree_exporter.describe_local_host()
+        )
+        return {
+            "panel": "dest",
+            "conn": self.dest_conn,
+            "root_path": root,
+            "selected_paths": sorted(self.dest_pane.selected),
+            "host_info": host_info,
+        }
 
     def _choose_save_path(self, title, initial_path):
         dlg = Gtk.FileChooserDialog(
-            title=title, transient_for=self, action=Gtk.FileChooserAction.SAVE,
-            buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-                     Gtk.STOCK_SAVE, Gtk.ResponseType.OK))
+            title=title,
+            transient_for=self,
+            action=Gtk.FileChooserAction.SAVE,
+            buttons=(
+                Gtk.STOCK_CANCEL,
+                Gtk.ResponseType.CANCEL,
+                Gtk.STOCK_SAVE,
+                Gtk.ResponseType.OK,
+            ),
+        )
         dlg.set_do_overwrite_confirmation(True)
         p = os.path.abspath(os.path.expanduser(initial_path))
         if os.path.isdir(os.path.dirname(p)):
@@ -1108,8 +1565,14 @@ class AppWindow(Gtk.Window):
 
     @staticmethod
     def _export_depth_choices():
-        return [("1", "Root level only"), ("2", "2 levels"), ("3", "3 levels"),
-                ("4", "4 levels"), ("5", "5 levels"), ("full", "Full recursive")]
+        return [
+            ("1", "Root level only"),
+            ("2", "2 levels"),
+            ("3", "3 levels"),
+            ("4", "4 levels"),
+            ("5", "5 levels"),
+            ("full", "Full recursive"),
+        ]
 
     @staticmethod
     def _export_depth_value(key):
@@ -1117,20 +1580,32 @@ class AppWindow(Gtk.Window):
 
     def _prompt_export_options(self, context):
         panel = context["panel"]
-        dlg = Gtk.Dialog(title=f"Export {panel.title()} Tree", transient_for=self, modal=True)
-        dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-                        "Choose File…", Gtk.ResponseType.OK)
+        dlg = Gtk.Dialog(
+            title=f"Export {panel.title()} Tree", transient_for=self, modal=True
+        )
+        dlg.add_buttons(
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            "Choose File…",
+            Gtk.ResponseType.OK,
+        )
         box = dlg.get_content_area()
         box.set_spacing(8)
         box.set_border_width(8)
-        box.pack_start(Gtk.Label(label=f"Host: {context['host_info']['host_display']}", xalign=0),
-                       False, False, 0)
+        box.pack_start(
+            Gtk.Label(label=f"Host: {context['host_info']['host_display']}", xalign=0),
+            False,
+            False,
+            0,
+        )
         pl = Gtk.Label(label=f"Path: {context['root_path']}", xalign=0)
         pl.set_line_wrap(True)
         box.pack_start(pl, False, False, 0)
         all_btn = Gtk.RadioButton.new_with_label_from_widget(None, "Entire directory")
         n = len(context["selected_paths"])
-        sel_btn = Gtk.RadioButton.new_with_label_from_widget(all_btn, f"Selected items only ({n})")
+        sel_btn = Gtk.RadioButton.new_with_label_from_widget(
+            all_btn, f"Selected items only ({n})"
+        )
         sel_btn.set_sensitive(n > 0)
         if n > 0:
             sel_btn.set_active(True)
@@ -1144,14 +1619,20 @@ class AppWindow(Gtk.Window):
         dlg.show_all()
         self._track_dialog(dlg)
         r = dlg.run()
-        scope = "selected" if sel_btn.get_active() and sel_btn.get_sensitive() else "all"
+        scope = (
+            "selected" if sel_btn.get_active() and sel_btn.get_sensitive() else "all"
+        )
         key = depth.get_active_id() or "full"
         self._untrack_dialog(dlg)
         dlg.destroy()
         if r != Gtk.ResponseType.OK:
             return None
-        return {"scope": scope, "depth_key": key,
-                "max_depth": self._export_depth_value(key), "depth_label": key}
+        return {
+            "scope": scope,
+            "depth_key": key,
+            "max_depth": self._export_depth_value(key),
+            "depth_label": key,
+        }
 
     def _run_export(self, context, opts, out_path):
         bar = self.source_bar if context["panel"] == "source" else self.dest_bar
@@ -1160,23 +1641,40 @@ class AppWindow(Gtk.Window):
 
         def work():
             try:
-                selected = context["selected_paths"] if opts["scope"] == "selected" else None
+                selected = (
+                    context["selected_paths"] if opts["scope"] == "selected" else None
+                )
                 # Use the connection captured at snapshot time: a side swap
                 # while the export runs must not reroute it to another host.
                 conn = context["conn"]
-                if context["panel"] == "source" and getattr(conn, "kind", None) == "ssh":
+                if (
+                    context["panel"] == "source"
+                    and getattr(conn, "kind", None) == "ssh"
+                ):
                     doc = tree_exporter.export_remote_tree(
-                        conn, out_path, context["panel"], context["root_path"],
-                        scope=opts["scope"], max_depth=opts["max_depth"],
-                        depth_label=opts["depth_label"], selected_paths=selected)
+                        conn,
+                        out_path,
+                        context["panel"],
+                        context["root_path"],
+                        scope=opts["scope"],
+                        max_depth=opts["max_depth"],
+                        depth_label=opts["depth_label"],
+                        selected_paths=selected,
+                    )
                 else:
                     doc = tree_exporter.export_local_tree(
-                        out_path, context["panel"], context["root_path"],
-                        scope=opts["scope"], max_depth=opts["max_depth"],
-                        depth_label=opts["depth_label"], selected_paths=selected)
+                        out_path,
+                        context["panel"],
+                        context["root_path"],
+                        scope=opts["scope"],
+                        max_depth=opts["max_depth"],
+                        depth_label=opts["depth_label"],
+                        selected_paths=selected,
+                    )
                 GLib.idle_add(self._export_done, bar, context, out_path, doc, None)
             except Exception as exc:
                 GLib.idle_add(self._export_done, bar, context, out_path, None, exc)
+
         threading.Thread(target=work, daemon=True).start()
 
     def _export_done(self, bar, context, out_path, doc, exc):
@@ -1187,7 +1685,9 @@ class AppWindow(Gtk.Window):
             self._log(f"Export failed: {exc}")
             self._show_error("Export failed", str(exc))
             return False
-        self._log(f"Export finished: {doc['meta'].get('total_entries', 0)} entries → {out_path}")
+        self._log(
+            f"Export finished: {doc['meta'].get('total_entries', 0)} entries → {out_path}"
+        )
         self._show_error("Export complete", out_path, Gtk.MessageType.INFO)
         return False
 
@@ -1204,8 +1704,10 @@ class AppWindow(Gtk.Window):
     def _on_delete_source(self, pane=None):
         if self._delete_in_progress:
             return
-        items = [(p, i["name"], i.get("is_dir", False))
-                 for p, i in sorted(self.source_pane.selected.items())]
+        items = [
+            (p, i["name"], i.get("is_dir", False))
+            for p, i in sorted(self.source_pane.selected.items())
+        ]
         if not items:
             return
         if not self._confirm_delete("Source", items):
@@ -1215,8 +1717,10 @@ class AppWindow(Gtk.Window):
     def _on_delete_dest(self, pane=None):
         if self._delete_in_progress:
             return
-        items = [(p, i["name"], i.get("is_dir", False))
-                 for p, i in sorted(self.dest_pane.selected.items())]
+        items = [
+            (p, i["name"], i.get("is_dir", False))
+            for p, i in sorted(self.dest_pane.selected.items())
+        ]
         if not items:
             return
         if not self._confirm_delete("Destination", items):
@@ -1227,10 +1731,13 @@ class AppWindow(Gtk.Window):
         n = len(items)
         n_files = sum(1 for _, _, d in items if not d)
         n_dirs = n - n_files
-        dlg = Gtk.MessageDialog(transient_for=self, modal=True,
-                                message_type=Gtk.MessageType.WARNING,
-                                buttons=Gtk.ButtonsType.NONE,
-                                text="Confirm Permanent Deletion")
+        dlg = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.NONE,
+            text="Confirm Permanent Deletion",
+        )
         preview = "\n".join(f"• {name}" for _, name, _ in items[:6])
         if n > 6:
             preview += f"\n… and {n - 6} more"
@@ -1239,11 +1746,15 @@ class AppWindow(Gtk.Window):
             parts.append(f"{n_files} file(s)")
         if n_dirs:
             parts.append(f"{n_dirs} folder(s)")
-        dlg.format_secondary_text(markup_escape(
-            f"Permanently delete {n} item(s) ({', '.join(parts)}) from {location}?\n\n"
-            f"{preview}\n\n⚠️ This operation is permanent and cannot be undone."))
-        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
-                        "Delete Permanently", Gtk.ResponseType.OK)
+        dlg.format_secondary_text(
+            markup_escape(
+                f"Permanently delete {n} item(s) ({', '.join(parts)}) from {location}?\n\n"
+                f"{preview}\n\n⚠️ This operation is permanent and cannot be undone."
+            )
+        )
+        dlg.add_buttons(
+            "Cancel", Gtk.ResponseType.CANCEL, "Delete Permanently", Gtk.ResponseType.OK
+        )
         dlg.set_default_response(Gtk.ResponseType.CANCEL)
         ok = dlg.get_widget_for_response(Gtk.ResponseType.OK)
         if ok is not None:
@@ -1270,10 +1781,15 @@ class AppWindow(Gtk.Window):
         self.main_stack.set_visible_child_name("delete_progress")
 
         if side == "source":
-            deleter = delete_local_item if getattr(self.conn, "kind", None) != "ssh" \
+            deleter = (
+                delete_local_item
+                if getattr(self.conn, "kind", None) != "ssh"
                 else self.conn.delete_item
+            )
         else:
-            deleter = self.dest_conn.delete if self._dest_is_ssh() else delete_local_item
+            deleter = (
+                self.dest_conn.delete if self._dest_is_ssh() else delete_local_item
+            )
 
         def work():
             done_paths, errors = [], []
@@ -1288,6 +1804,7 @@ class AppWindow(Gtk.Window):
                 else:
                     errors.append((name, err))
             GLib.idle_add(self._delete_finished, side, done_paths, errors, total)
+
         threading.Thread(target=work, daemon=True).start()
 
     def _delete_progress_update(self, i, total, name):
@@ -1321,8 +1838,10 @@ class AppWindow(Gtk.Window):
             msg += f", {n_skip} skipped"
         self._log(msg)
         if errors:
-            self._show_error(f"{len(errors)} of {total} item(s) could not be deleted",
-                             "\n".join(f"{n}: {e}" for n, e in errors[:10]))
+            self._show_error(
+                f"{len(errors)} of {total} item(s) could not be deleted",
+                "\n".join(f"{n}: {e}" for n, e in errors[:10]),
+            )
         self._update_delete_buttons()
         return False
 
@@ -1355,18 +1874,24 @@ class AppWindow(Gtk.Window):
         if self._dest_is_ssh():
             exists = self._dest_exists(dest or "~")
             if not exists:
-                self._show_error("The destination folder does not exist or is unreachable",
-                                 str(dest or "~"))
+                self._show_error(
+                    "The destination folder does not exist or is unreachable",
+                    str(dest or "~"),
+                )
                 return
         elif not os.path.isdir(os.path.expanduser(dest)):
-            self._show_error("The destination folder does not exist",
-                             str(dest or "~"))
+            self._show_error("The destination folder does not exist", str(dest or "~"))
             return
         self._apply_all_choice = None
         transfers = []
         for path, info in sorted(self.source_pane.selected.items()):
-            t = Transfer(info["name"], path, self._dest_join(info["name"]),
-                         self.batch, is_dir=info.get("is_dir", False))
+            t = Transfer(
+                info["name"],
+                path,
+                self._dest_join(info["name"]),
+                self.batch,
+                is_dir=info.get("is_dir", False),
+            )
             if self.dest_conn is not None:
                 t.dest_conn = self.dest_conn
             transfers.append(t)
@@ -1380,13 +1905,31 @@ class AppWindow(Gtk.Window):
         self._next_id += 1
         self._transfers.append(t)
         self._by_id[t.id] = t
-        self._trow[t.id] = self.transfers_model.get_path(self.transfers_model.append([
-            t.id, t.name, "waiting…", 0, "", "", "queued", self._colors["queued"],
-            True, None, "", "edit-delete"]))
+        self._trow[t.id] = self.transfers_model.get_path(
+            self.transfers_model.append(
+                [
+                    t.id,
+                    t.name,
+                    "waiting…",
+                    0,
+                    "",
+                    "",
+                    "queued",
+                    self._colors["queued"],
+                    True,
+                    None,
+                    "",
+                    "edit-delete",
+                ]
+            )
+        )
         self.transfers_tab_lbl.set_text(f"Transfers ({len(self._transfers)})")
         self._update_transfer_controls()
         self.notebook.set_current_page(
-            self.notebook.page_num(self.transfers_page) if hasattr(self, "transfers_page") else 1)
+            self.notebook.page_num(self.transfers_page)
+            if hasattr(self, "transfers_page")
+            else 1
+        )
         threading.Thread(target=self._worker, args=(t,), daemon=True).start()
 
     def _policy(self):
@@ -1407,22 +1950,35 @@ class AppWindow(Gtk.Window):
                 t.total = st["bytes"] if st else None
                 t.files = st["files"] if st else None
                 t.method = "tar" if t.is_dir else "scp"
-                if t.dest_conn is not None and getattr(t.dest_conn, "kind", None) == "ssh":
+                if (
+                    t.dest_conn is not None
+                    and getattr(t.dest_conn, "kind", None) == "ssh"
+                ):
                     status, detail = transfer_engine.run(
-                        t.dest_conn, self.conn, t.src, t.dest, policy=t.policy, method=t.method,
+                        t.dest_conn,
+                        self.conn,
+                        t.src,
+                        t.dest,
+                        policy=t.policy,
+                        method=t.method,
                         on_ask=self._on_ask_conflict,
                         on_part=lambda p: GLib.idle_add(self._on_part, t, p),
                         on_bytes=lambda b, f: GLib.idle_add(self._on_bytes, t, b, f),
                         proc_sink=t.procs,
-                        on_finish=lambda: GLib.idle_add(self._set_merging, t))
+                        on_finish=lambda: GLib.idle_add(self._set_merging, t),
+                    )
                 else:
                     status, detail = self.conn.copy(
-                        t.src, t.dest, policy=t.policy, method=t.method,
+                        t.src,
+                        t.dest,
+                        policy=t.policy,
+                        method=t.method,
                         on_ask=self._on_ask_conflict,
                         on_part=lambda p: GLib.idle_add(self._on_part, t, p),
                         on_bytes=lambda b, f: GLib.idle_add(self._on_bytes, t, b, f),
                         proc_sink=t.procs,
-                        on_finish=lambda: GLib.idle_add(self._set_merging, t))
+                        on_finish=lambda: GLib.idle_add(self._set_merging, t),
+                    )
             except Exception as e:
                 status, detail = "failed", str(e)
             if t.removed:
@@ -1528,7 +2084,9 @@ class AppWindow(Gtk.Window):
         else:
             self._set_cell(t, 10, f"{status} — {t.name}")
         self.summary_lbl.set_text(f"{self.done} done · {self.failed} failed")
-        self.transfers_tab_lbl.set_text(f"Transfers ({len([x for x in self._transfers if x.status not in _TERMINAL])})")
+        self.transfers_tab_lbl.set_text(
+            f"Transfers ({len([x for x in self._transfers if x.status not in _TERMINAL])})"
+        )
         self._update_transfer_controls()
         if status in ("done", "skipped", "failed"):
             self._schedule_dest_reload()
@@ -1554,8 +2112,21 @@ class AppWindow(Gtk.Window):
     def _on_retry(self, t):
         self._apply_all_choice = None
         t.batch = self.batch
-        for attr in ("status", "part", "total", "files", "files_done", "current",
-                     "last", "last_t", "speed", "eta", "final", "err", "method"):
+        for attr in (
+            "status",
+            "part",
+            "total",
+            "files",
+            "files_done",
+            "current",
+            "last",
+            "last_t",
+            "speed",
+            "eta",
+            "final",
+            "err",
+            "method",
+        ):
             setattr(t, attr, None)
         t.status = "queued"
         t.current = 0
@@ -1601,13 +2172,17 @@ class AppWindow(Gtk.Window):
         self._trow = {}
         for i in range(len(self.transfers_model)):
             row = self.transfers_model[i]
-            self._trow[row[0]] = self.transfers_model.get_path(self.transfers_model.get_iter(i))
+            self._trow[row[0]] = self.transfers_model.get_path(
+                self.transfers_model.get_iter(i)
+            )
 
     def _update_transfer_controls(self):
         self.cancel_all_btn.set_visible(
-            any(t.status in ("queued", "running", "paused") for t in self._transfers))
+            any(t.status in ("queued", "running", "paused") for t in self._transfers)
+        )
         self.clear_finished_btn.set_visible(
-            any(t.status in _TERMINAL for t in self._transfers))
+            any(t.status in _TERMINAL for t in self._transfers)
+        )
         self._update_delete_buttons()
 
     def _ensure_ticker(self):
@@ -1759,8 +2334,12 @@ class AppWindow(Gtk.Window):
     def _cleanup_part(self, t):
         if t.part and os.path.exists(t.part):
             if os.path.isdir(t.part) and not os.path.islink(t.part):
-                threading.Thread(target=shutil.rmtree, args=(t.part,),
-                                 kwargs={"ignore_errors": True}, daemon=True).start()
+                threading.Thread(
+                    target=shutil.rmtree,
+                    args=(t.part,),
+                    kwargs={"ignore_errors": True},
+                    daemon=True,
+                ).start()
             else:
                 try:
                     os.remove(t.part)
@@ -1777,7 +2356,9 @@ class AppWindow(Gtk.Window):
             done = threading.Event()
 
             def show():
-                dlg = Gtk.Dialog(title="File already exists", transient_for=self, modal=True)
+                dlg = Gtk.Dialog(
+                    title="File already exists", transient_for=self, modal=True
+                )
                 dlg.add_button("Cancel item", 4)
                 dlg.add_button("Skip", 1)
                 dlg.add_button("Keep both", 2)
@@ -1788,11 +2369,21 @@ class AppWindow(Gtk.Window):
                 box.set_border_width(10)
                 rs = human_size(remote_size) if remote_size is not None else "unknown"
                 ls = human_size(local_size) if local_size is not None else "unknown"
-                box.pack_start(Gtk.Label(
-                    label=f"<b>{os.path.basename(final)}</b> already exists", use_markup=True),
-                    False, False, 0)
-                box.pack_start(Gtk.Label(label=f"Remote: {rs}\nLocal: {ls}", xalign=0),
-                               False, False, 0)
+                box.pack_start(
+                    Gtk.Label(
+                        label=f"<b>{os.path.basename(final)}</b> already exists",
+                        use_markup=True,
+                    ),
+                    False,
+                    False,
+                    0,
+                )
+                box.pack_start(
+                    Gtk.Label(label=f"Remote: {rs}\nLocal: {ls}", xalign=0),
+                    False,
+                    False,
+                    0,
+                )
                 apply_all = Gtk.CheckButton(label="Apply to all remaining conflicts")
                 box.pack_start(apply_all, False, False, 0)
                 self._ask_dialog = dlg
@@ -1801,7 +2392,9 @@ class AppWindow(Gtk.Window):
                 resp = dlg.run()
                 self._untrack_dialog(dlg)
                 self._ask_dialog = None
-                choice = {1: POLICY_SKIP, 2: POLICY_KEEP_BOTH, 3: POLICY_OVERWRITE}.get(resp)
+                choice = {1: POLICY_SKIP, 2: POLICY_KEEP_BOTH, 3: POLICY_OVERWRITE}.get(
+                    resp
+                )
                 if apply_all.get_active() and choice:
                     self._apply_all_choice = choice
                 try:
@@ -1823,18 +2416,28 @@ class AppWindow(Gtk.Window):
     def _on_delete_event(self, widget, event):
         if self._delete_in_progress:
             return not self._confirm_quit_delete()
-        if not any(t.status in ("queued", "running", "paused") for t in self._transfers):
+        if not any(
+            t.status in ("queued", "running", "paused") for t in self._transfers
+        ):
             return False
         return not self._confirm_quit()
 
     def _confirm_quit_delete(self):
         dlg = Gtk.MessageDialog(
-            transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
-            buttons=Gtk.ButtonsType.NONE, text="Deletion in progress")
-        dlg.add_buttons("Keep running", Gtk.ResponseType.CANCEL,
-                        "Quit anyway", Gtk.ResponseType.OK)
-        dlg.format_secondary_text(markup_escape(
-            "A deletion is currently running.\nQuitting now cancels the remaining deletions."))
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text="Deletion in progress",
+        )
+        dlg.add_buttons(
+            "Keep running", Gtk.ResponseType.CANCEL, "Quit anyway", Gtk.ResponseType.OK
+        )
+        dlg.format_secondary_text(
+            markup_escape(
+                "A deletion is currently running.\nQuitting now cancels the remaining deletions."
+            )
+        )
         self._track_dialog(dlg)
         dlg.show_all()
         r = dlg.run()
@@ -1845,15 +2448,25 @@ class AppWindow(Gtk.Window):
         return r == Gtk.ResponseType.OK
 
     def _confirm_quit(self):
-        active = sum(1 for t in self._transfers if t.status in ("queued", "running", "paused"))
+        active = sum(
+            1 for t in self._transfers if t.status in ("queued", "running", "paused")
+        )
         dlg = Gtk.MessageDialog(
-            transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
-            buttons=Gtk.ButtonsType.NONE, text="Transfers in progress")
-        dlg.add_buttons("Keep running", Gtk.ResponseType.CANCEL,
-                        "Quit anyway", Gtk.ResponseType.OK)
-        dlg.format_secondary_text(markup_escape(
-            f"{active} transfer(s) are queued or in progress.\n"
-            "Quitting now cancels them and deletes partial files."))
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text="Transfers in progress",
+        )
+        dlg.add_buttons(
+            "Keep running", Gtk.ResponseType.CANCEL, "Quit anyway", Gtk.ResponseType.OK
+        )
+        dlg.format_secondary_text(
+            markup_escape(
+                f"{active} transfer(s) are queued or in progress.\n"
+                "Quitting now cancels them and deletes partial files."
+            )
+        )
         self._track_dialog(dlg)
         dlg.show_all()
         r = dlg.run()

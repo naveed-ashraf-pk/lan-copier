@@ -14,6 +14,7 @@ Callbacks:
 """
 
 import gi
+
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GObject, Pango
 import re
@@ -37,8 +38,11 @@ COL_STATE_SORT = 0
 STATE_PRIO = {"missing": 0, "differ": 1, "conflict": 2, "same": 3, "extra": 4}
 
 _STATE_COLOR = {
-    "missing": "#c62828", "differ": "#ef6c00", "conflict": "#ad1457",
-    "same": "#2e7d32", "extra": "#1565c0",
+    "missing": "#c62828",
+    "differ": "#ef6c00",
+    "conflict": "#ad1457",
+    "same": "#2e7d32",
+    "extra": "#1565c0",
 }
 
 
@@ -50,9 +54,18 @@ def human_size(n):
     return f"{n:.1f} TB"
 
 
+def human_size_compact(n):
+    """human_size with a whole-value ".0" trimmed ("256.0 GB" -> "256 GB"),
+    used for disk-space totals where the one decimal looks noisy."""
+    s = human_size(n)
+    return s.replace(".0 ", " ")
+
+
 def natural_key(name):
-    return tuple((1, int(part)) if part.isdigit() else (0, part.lower())
-                 for part in re.split(r"(\d+)", name))
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part.lower())
+        for part in re.split(r"(\d+)", name)
+    )
 
 
 class DirPane(Gtk.Box):
@@ -62,9 +75,10 @@ class DirPane(Gtk.Box):
         self.navigate_cb = callbacks.get("navigate")
         self.selection_cb = callbacks.get("selection_changed")
 
-        self.selected = {}      # full path -> {"name","is_dir"}
-        self.meta = {}          # name -> {"is_dir","size"}
-        self.states = {}        # name -> state keyword
+        self.selected = {}  # full path -> {"name","is_dir"}
+        self.meta = {}  # name -> {"is_dir","size"}
+        self.states = {}  # name -> state keyword
+        self.folder_sizes = {}  # name -> {"bytes","files"} (+ "partial"/"failed")
         self._state_colors = dict(_STATE_COLOR)
 
         self._build_model()
@@ -73,8 +87,8 @@ class DirPane(Gtk.Box):
 
     def _build_model(self):
         self.model = Gtk.ListStore(
-            bool, str, str, str, str, bool, str,
-            GObject.TYPE_INT64, GObject.TYPE_INT64)
+            bool, str, str, str, str, bool, str, GObject.TYPE_INT64, GObject.TYPE_INT64
+        )
         self.filter = self.model.filter_new()
         self._filter_text = ""
         self.filter.set_visible_func(self._filter_visible)
@@ -94,7 +108,9 @@ class DirPane(Gtk.Box):
         name_col.set_sort_column_id(COL_NAME)
         self.tree.append_column(name_col)
 
-        size_col = Gtk.TreeViewColumn("Size", Gtk.CellRendererText(), text=COL_SIZE_TEXT)
+        size_col = Gtk.TreeViewColumn(
+            "Size", Gtk.CellRendererText(), text=COL_SIZE_TEXT
+        )
         size_col.set_sort_column_id(COL_SIZE_TEXT)
         self.tree.append_column(size_col)
 
@@ -102,7 +118,9 @@ class DirPane(Gtk.Box):
         type_col.set_sort_column_id(COL_TYPE)
         self.tree.append_column(type_col)
 
-        mtime_col = Gtk.TreeViewColumn("Modified", Gtk.CellRendererText(), text=COL_MTIME_TEXT)
+        mtime_col = Gtk.TreeViewColumn(
+            "Modified", Gtk.CellRendererText(), text=COL_MTIME_TEXT
+        )
         mtime_col.set_sort_column_id(COL_MTIME_TEXT)
         self.tree.append_column(mtime_col)
 
@@ -114,7 +132,8 @@ class DirPane(Gtk.Box):
 
         for cid in (COL_NAME, COL_SIZE_TEXT, COL_TYPE, COL_MTIME_TEXT):
             self.sort.set_sort_func(
-                cid, lambda m, a, b, _d=None, c=cid: self._sort_by(m, a, b, c))
+                cid, lambda m, a, b, _d=None, c=cid: self._sort_by(m, a, b, c)
+            )
         self.sort.set_sort_func(COL_STATE_SORT, self._sort_state)
         self.tree.connect("row-activated", self._on_row_activated)
 
@@ -129,7 +148,16 @@ class DirPane(Gtk.Box):
         self.pack_start(sw, True, True, 0)
 
         self.summary = Gtk.Label(label="", xalign=0)
-        self.pack_start(self.summary, False, False, 0)
+        self.summary.set_hexpand(True)
+        self.spinner = Gtk.Spinner()
+        self.spinner.set_no_show_all(True)
+        self.right_label = Gtk.Label(label="", xalign=1)
+        self.right_label.set_tooltip_text("")
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        status_row.pack_start(self.summary, True, True, 0)
+        status_row.pack_start(self.spinner, False, False, 0)
+        status_row.pack_start(self.right_label, False, False, 0)
+        self.pack_start(status_row, False, False, 0)
 
     def _build_controls(self):
         box = Gtk.Box(spacing=4)
@@ -145,15 +173,25 @@ class DirPane(Gtk.Box):
         box.pack_start(self.select_all_btn, False, False, 0)
 
         self.select_missing_btn = Gtk.Button(label="Missing")
-        self.select_missing_btn.set_tooltip_text("Check items missing from the other side")
-        self.select_missing_btn.connect("clicked", lambda b: self._select_pred(
-            lambda n: self.states.get(n) == "missing"))
+        self.select_missing_btn.set_tooltip_text(
+            "Check items missing from the other side"
+        )
+        self.select_missing_btn.connect(
+            "clicked",
+            lambda b: self._select_pred(lambda n: self.states.get(n) == "missing"),
+        )
         box.pack_start(self.select_missing_btn, False, False, 0)
 
         self.select_changed_btn = Gtk.Button(label="Changed")
-        self.select_changed_btn.set_tooltip_text("Check items missing / size-differing / conflicted")
-        self.select_changed_btn.connect("clicked", lambda b: self._select_pred(
-            lambda n: self.states.get(n) in ("missing", "differ", "conflict")))
+        self.select_changed_btn.set_tooltip_text(
+            "Check items missing / size-differing / conflicted"
+        )
+        self.select_changed_btn.connect(
+            "clicked",
+            lambda b: self._select_pred(
+                lambda n: self.states.get(n) in ("missing", "differ", "conflict")
+            ),
+        )
         box.pack_start(self.select_changed_btn, False, False, 0)
 
         self.invert_btn = Gtk.Button(label="Invert")
@@ -162,11 +200,15 @@ class DirPane(Gtk.Box):
         box.pack_start(self.invert_btn, False, False, 0)
 
         self.folders_btn = Gtk.Button(label="Folders")
-        self.folders_btn.connect("clicked", lambda b: self._select_pred(self._is_dir_name))
+        self.folders_btn.connect(
+            "clicked", lambda b: self._select_pred(self._is_dir_name)
+        )
         box.pack_start(self.folders_btn, False, False, 0)
 
         self.files_btn = Gtk.Button(label="Files")
-        self.files_btn.connect("clicked", lambda b: self._select_pred(lambda n: not self._is_dir_name(n)))
+        self.files_btn.connect(
+            "clicked", lambda b: self._select_pred(lambda n: not self._is_dir_name(n))
+        )
         box.pack_start(self.files_btn, False, False, 0)
         return box
 
@@ -180,16 +222,26 @@ class DirPane(Gtk.Box):
         prev_selected = set(self.selected)
         self.model.clear()
         self.meta.clear()
+        self.folder_sizes = {}
         self.selected = {}
         for it in sorted(items, key=lambda i: (not i["is_dir"], i["name"].lower())):
             full = prefix + it["name"]
             self.meta[it["name"]] = {"is_dir": it["is_dir"], "size": it["size"]}
-            self.model.append([
-                False, it["name"],
-                "—" if it["is_dir"] else human_size(it.get("size", 0)),
-                "Folder" if it["is_dir"] else ("Link" if it.get("is_link") else "File"),
-                it.get("mtime", ""), it["is_dir"], full,
-                it.get("size", 0), int(it.get("mtime_epoch", 0) or 0)])
+            self.model.append(
+                [
+                    False,
+                    it["name"],
+                    "—" if it["is_dir"] else human_size(it.get("size", 0)),
+                    "Folder"
+                    if it["is_dir"]
+                    else ("Link" if it.get("is_link") else "File"),
+                    it.get("mtime", ""),
+                    it["is_dir"],
+                    full,
+                    it.get("size", 0),
+                    int(it.get("mtime_epoch", 0) or 0),
+                ]
+            )
         if prev_selected:
             for row in self.model:
                 if row[COL_PATH] in prev_selected:
@@ -197,12 +249,15 @@ class DirPane(Gtk.Box):
         self._sync_select_all()
 
     def clear(self):
-        """Drop every row, the selection, states, and summary text."""
+        """Drop every row, the selection, states, folder sizes, and summary."""
         self.model.clear()
         self.meta.clear()
         self.states.clear()
+        self.folder_sizes.clear()
         self.selected = {}
         self.summary.set_text("")
+        self.set_right_label("")
+        self.set_busy(False)
         self._sync_select_all()
 
     def set_state_colors(self, colors):
@@ -215,6 +270,58 @@ class DirPane(Gtk.Box):
 
     def set_summary(self, text):
         self.summary.set_text(text)
+
+    def set_right_label(self, text, color=None):
+        """Right-aligned status text. `color` (hex string) toggles a colored
+        pango span; otherwise plain text is used so no markup is interpreted."""
+        if color:
+            self.right_label.set_markup(f'<span foreground="{color}">{text}</span>')
+        else:
+            self.right_label.set_text(text)
+
+    def set_busy(self, active):
+        """Show/hide the little in-flight spinner next to the right label."""
+        if active:
+            self.spinner.show()
+            self.spinner.start()
+        else:
+            self.spinner.stop()
+            self.spinner.hide()
+
+    def folder_paths(self):
+        """[(name, full_path)] for the current listing's folders, for the
+        window to dispatch lazy recursive size calculations."""
+        return [
+            (row[COL_NAME], row[COL_PATH])
+            for row in self.model
+            if bool(row[COL_IS_DIR])
+        ]
+
+    def _row_by_name(self, name):
+        for i, row in enumerate(self.model):
+            if row[COL_NAME] == name:
+                return i, row
+        return None, None
+
+    def set_folder_size(self, name, st, failed=False):
+        """Land a lazy folder-size result: update the Size column (raw + text)
+        and meta so sums/hints/sorting reflect it. Show '~size' for a partial
+        result; keep the em-dash when the calc entirely failed."""
+        i, row = self._row_by_name(name)
+        if row is None or not bool(row[COL_IS_DIR]):
+            return
+        if not st:
+            self.folder_sizes[name] = {"failed": True}
+            return
+        info = dict(st)
+        self.folder_sizes[name] = info
+        bytes_n = info.get("bytes", 0)
+        partial = bool(info.get("partial")) or bool(failed)
+        text = ("~" + human_size(bytes_n)) if partial else human_size(bytes_n)
+        if name in self.meta:
+            self.meta[name]["size"] = bytes_n
+        row[COL_SIZE] = bytes_n
+        row[COL_SIZE_TEXT] = text
 
     # -- renderers ----------------------------------------------------------
 
@@ -291,7 +398,10 @@ class DirPane(Gtk.Box):
     def _visible_rows(self):
         for i, row in enumerate(self.model):
             it = self.model.get_iter((i,))
-            if it is not None and self.filter.convert_child_iter_to_iter(it) is not None:
+            if (
+                it is not None
+                and self.filter.convert_child_iter_to_iter(it) is not None
+            ):
                 yield row
 
     def _check(self, row, on):
@@ -307,7 +417,10 @@ class DirPane(Gtk.Box):
         """Re-add a row to `selected` without re-notifying (used during a reload
         repopulation; the window refreshes the Selected tab anyway)."""
         row[COL_CHECK] = True
-        self.selected[row[COL_PATH]] = {"name": row[COL_NAME], "is_dir": row[COL_IS_DIR]}
+        self.selected[row[COL_PATH]] = {
+            "name": row[COL_NAME],
+            "is_dir": row[COL_IS_DIR],
+        }
 
     def _notify_selection(self):
         if self.selection_cb:
@@ -325,7 +438,10 @@ class DirPane(Gtk.Box):
         for row in self.model:
             row[COL_CHECK] = on
             if on:
-                self.selected[row[COL_PATH]] = {"name": row[COL_NAME], "is_dir": row[COL_IS_DIR]}
+                self.selected[row[COL_PATH]] = {
+                    "name": row[COL_NAME],
+                    "is_dir": row[COL_IS_DIR],
+                }
             else:
                 self.selected.pop(row[COL_PATH], None)
         self._notify_selection()

@@ -110,19 +110,31 @@ class LocalConnection(SSHConnection):
     def stat_remote(self, path):
         """Exact regular-file bytes and file count, mirroring the SSH side
         (which sums find -type f sizes). Sizes follow symlinks so the
-        smart-skip size comparison stays consistent with the destination."""
+        smart-skip size comparison stays consistent with the destination.
+        Adds `partial: True` when any entry was skipped (unreadable file or
+        subdirectory), so callers can flag the result as an undercount."""
         path = self.expand_remote(path)
         try:
             if os.path.isdir(path) and not os.path.islink(path):
                 total, n = 0, 0
-                for dirpath, _, files in os.walk(path):
+
+                def _on_err(exc):
+                    nonlocal partial
+                    partial = True
+
+                partial = False
+                for dirpath, _, files in os.walk(path, onerror=_on_err):
                     for f in files:
                         try:
                             total += os.path.getsize(os.path.join(dirpath, f))
                         except OSError:
+                            partial = True
                             continue
                         n += 1
-                return {"bytes": total, "files": n}
+                st = {"bytes": total, "files": n}
+                if partial:
+                    st["partial"] = True
+                return st
             st = os.stat(path)
             return {"bytes": st.st_size, "files": 1}
         except OSError:
@@ -156,6 +168,9 @@ class LocalConnection(SSHConnection):
     def size(self, path):
         st = self.stat_remote(path)
         return st["bytes"] if st else None
+
+    def disk_space(self, path):
+        return commands_local.disk_space(self.expand_remote(path))
 
     def mkdir(self, path):
         try:
@@ -205,8 +220,10 @@ class LocalConnection(SSHConnection):
         and between files, so a pause takes effect within one 1 MiB chunk."""
         while True:
             with self._cancel_lock:
-                cancelled = (self._cancel_event.is_set()
-                             or id(proc_sink) in self._cancelled_sinks)
+                cancelled = (
+                    self._cancel_event.is_set()
+                    or id(proc_sink) in self._cancelled_sinks
+                )
             if cancelled:
                 raise _LocalAbort
             with self._pause_lock:
@@ -264,8 +281,12 @@ class LocalConnection(SSHConnection):
 
         def inside_skip(p):
             a = os.path.abspath(p)
-            return (a == part_abs or a.startswith(part_abs + os.sep)
-                    or a == final_abs or a.startswith(final_abs + os.sep))
+            return (
+                a == part_abs
+                or a.startswith(part_abs + os.sep)
+                or a == final_abs
+                or a.startswith(final_abs + os.sep)
+            )
 
         def onerror(e):
             # os.walk silently skips directories it cannot read; fail the
@@ -288,7 +309,11 @@ class LocalConnection(SSHConnection):
                     full = os.path.join(dirpath, d)
                     if os.path.islink(full):
                         self._check(proc_sink)
-                        dst = os.path.join(part, rel, d) if rel != "." else os.path.join(part, d)
+                        dst = (
+                            os.path.join(part, rel, d)
+                            if rel != "."
+                            else os.path.join(part, d)
+                        )
                         os.symlink(os.readlink(full), dst)
                     elif not inside_skip(full):
                         kept.append(d)
@@ -298,7 +323,11 @@ class LocalConnection(SSHConnection):
                     if inside_skip(src):
                         continue
                     self._check(proc_sink)
-                    dst = os.path.join(part, rel, f) if rel != "." else os.path.join(part, f)
+                    dst = (
+                        os.path.join(part, rel, f)
+                        if rel != "."
+                        else os.path.join(part, f)
+                    )
                     st = os.lstat(src)
                     if stat.S_ISLNK(st.st_mode):
                         # a symlink is recreated, not dereferenced
@@ -326,12 +355,18 @@ class LocalConnection(SSHConnection):
     def friendly_error(err):
         low = (err or "").lower()
         if "permission denied" in low:
-            return ("Permission denied",
-                    "The folder cannot be read.\nCheck its permissions in the file manager.")
+            return (
+                "Permission denied",
+                "The folder cannot be read.\nCheck its permissions in the file manager.",
+            )
         if "not a directory" in low:
-            return ("Not a folder",
-                    "The path points to a file, not a folder.\nType a folder path in the path bar.")
+            return (
+                "Not a folder",
+                "The path points to a file, not a folder.\nType a folder path in the path bar.",
+            )
         if "no such file" in low or "cannot list" in low or "is not a folder" in low:
-            return ("Folder not found",
-                    "The folder does not exist or is not accessible.\nCheck the path in the path bar.")
+            return (
+                "Folder not found",
+                "The folder does not exist or is not accessible.\nCheck the path in the path bar.",
+            )
         return ("Local error", err or "Unknown error.")

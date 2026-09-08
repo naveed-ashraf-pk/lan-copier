@@ -1,4 +1,5 @@
 """Tests for SSHConnection transport (copy/parse/pause/delete/stat)."""
+
 import glob
 import io
 import json
@@ -17,13 +18,18 @@ import base64
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ssh_transport import (
-    SSHConnection, POLICY_ASK, POLICY_OVERWRITE, POLICY_KEEP_BOTH, POLICY_SKIP,
+    SSHConnection,
+    POLICY_ASK,
+    POLICY_OVERWRITE,
+    POLICY_KEEP_BOTH,
+    POLICY_SKIP,
 )
 from local_transport import LocalConnection, dir_list, dir_tree, delete_local_item
 import tree_exporter
 
 from tests import common
 from tests.common import *
+
 
 def test_skip_existing():
     d = tempfile.mkdtemp()
@@ -33,14 +39,14 @@ def test_skip_existing():
         c = make_conn()
         c._run_cmd = fake_run_ok
         seen = []
-        status, detail = c.copy("/r/f.txt", dest, policy=POLICY_SKIP, on_part=seen.append)
+        status, detail = c.copy(
+            "/r/f.txt", dest, policy=POLICY_SKIP, on_part=seen.append
+        )
         assert status == "skipped"
         assert open(dest).read() == "old"
         assert seen == []
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_overwrite():
@@ -59,8 +65,6 @@ def test_overwrite():
         shutil.rmtree(d)
 
 
-
-
 def test_keep_both():
     d = tempfile.mkdtemp()
     try:
@@ -77,8 +81,6 @@ def test_keep_both():
         shutil.rmtree(d)
 
 
-
-
 def test_ask_same_size_skips():
     d = tempfile.mkdtemp()
     try:
@@ -89,15 +91,16 @@ def test_ask_same_size_skips():
         c.stat_remote = lambda p: {"bytes": 4, "files": 1}
         asked = []
         status, detail = c.copy(
-            "/r/f.txt", dest, policy=POLICY_ASK,
-            on_ask=lambda *a: asked.append(a) or POLICY_OVERWRITE)
+            "/r/f.txt",
+            dest,
+            policy=POLICY_ASK,
+            on_ask=lambda *a: asked.append(a) or POLICY_OVERWRITE,
+        )
         assert status == "skipped"
         assert "same size" in detail
         assert asked == []
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_ask_different_size_asks():
@@ -122,8 +125,6 @@ def test_ask_different_size_asks():
         shutil.rmtree(d)
 
 
-
-
 def test_ask_decline_cancels():
     d = tempfile.mkdtemp()
     try:
@@ -132,14 +133,14 @@ def test_ask_decline_cancels():
         c = make_conn()
         c._run_cmd = fake_run_ok
         c.stat_remote = lambda p: {"bytes": 99, "files": 1}
-        status, detail = c.copy("/r/f.txt", dest, policy=POLICY_ASK, on_ask=lambda *a: None)
+        status, detail = c.copy(
+            "/r/f.txt", dest, policy=POLICY_ASK, on_ask=lambda *a: None
+        )
         assert status == "cancelled"
         assert open(dest).read() == "old"
         assert parts_in(d) == []
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_failed_cleans_part():
@@ -156,8 +157,6 @@ def test_failed_cleans_part():
         shutil.rmtree(d)
 
 
-
-
 def test_aborted_cleans_part():
     d = tempfile.mkdtemp()
     try:
@@ -172,8 +171,6 @@ def test_aborted_cleans_part():
         shutil.rmtree(d)
 
 
-
-
 def test_overwrite_dir():
     d = tempfile.mkdtemp()
     try:
@@ -186,8 +183,9 @@ def test_overwrite_dir():
             os.makedirs(argv[-1])
             with open(os.path.join(argv[-1], "new.txt"), "w") as f:
                 f.write("new")
-            return subprocess.Popen(["sleep", "0"], stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.PIPE)
+            return subprocess.Popen(
+                ["sleep", "0"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
 
         c._spawn = fake_dir_spawn
         c._wait_or_kill = lambda p, la, stall=120.0, paused=None: 0
@@ -195,12 +193,11 @@ def test_overwrite_dir():
         assert status == "done"
         assert os.path.isdir(dest)
         assert os.path.isfile(os.path.join(dest, "new.txt"))
-        assert os.path.isfile(os.path.join(dest, "sub", "old.txt")), \
+        assert os.path.isfile(os.path.join(dest, "sub", "old.txt")), (
             "merge keeps destination content that is not overwritten"
+        )
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_unique_path():
@@ -211,11 +208,11 @@ def test_unique_path():
         b = os.path.join(d, "a (1).txt")
         open(b, "w").write("2")
         assert SSHConnection.unique_path(a) == os.path.join(d, "a (2).txt")
-        assert SSHConnection.unique_path(os.path.join(d, "zz.txt")) == os.path.join(d, "zz.txt")
+        assert SSHConnection.unique_path(os.path.join(d, "zz.txt")) == os.path.join(
+            d, "zz.txt"
+        )
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_local_size():
@@ -233,8 +230,6 @@ def test_local_size():
         shutil.rmtree(d)
 
 
-
-
 def test_replace_failure_cleans_part():
     d = tempfile.mkdtemp()
     try:
@@ -243,7 +238,8 @@ def test_replace_failure_cleans_part():
         scp_ok(c)
         orig = SSHConnection.__dict__["_place"]
         SSHConnection._place = staticmethod(
-            lambda p, f: (_ for _ in ()).throw(OSError("rename boom")))
+            lambda p, f: (_ for _ in ()).throw(OSError("rename boom"))
+        )
         try:
             try:
                 c.copy("/r/f.txt", dest, policy=POLICY_OVERWRITE)
@@ -256,8 +252,6 @@ def test_replace_failure_cleans_part():
         assert parts_in(d) == []
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_stat_remote_parse():
@@ -285,6 +279,47 @@ def test_stat_remote_parse():
     assert c.stat_remote("/tmp/some") is None
 
 
+def test_disk_space_parse():
+    c = make_conn()
+    c._uname = "Linux"
+    calls = []
+
+    def fake_run(argv, timeout=None):
+        calls.append(argv)
+        if calls[0] == argv:
+            n = len(calls)
+        return 0, "Size Used Avail\n1234 500 734\n", ""
+
+    c._run_cmd = fake_run
+    ds = c.disk_space("/tmp/some")
+    assert ds == {"total": 1234, "free": 734}, ds
+    assert "--output=size,used,avail" in calls[0][-1]
+    assert "du" not in calls[0][-1], "sizes must be exact bytes, not du blocks"
+
+    # Darwin df -k: filesystem, 1024-blocks, used, available...
+    c._uname = "Darwin"
+
+    def darwin_run(argv, timeout=None):
+        calls.append(argv)
+        return (
+            0,
+            "/dev/disk1s1 1048576 409600 638976 40% 12 0 0% /System/Volumes/Data\n",
+            "",
+        )
+
+    c._run_cmd = darwin_run
+    ds2 = c.disk_space("/tmp/some")
+    assert ds2 == {"total": 1048576 * 1024, "free": 638976 * 1024}, ds2
+    assert "df -k" in calls[-1][-1]
+
+    # failure -> None
+    c._run_cmd = lambda argv, timeout=None: (1, "", "cannot access")
+    assert c.disk_space("/tmp/some") is None
+
+    # garbage -> None
+    c._uname = "Linux"
+    c._run_cmd = lambda argv, timeout=None: (0, "Size Used Avail\nxx yy zz\n", "")
+    assert c.disk_space("/tmp/some") is None
 
 
 class FakeTreeProc:
@@ -314,8 +349,6 @@ class FakeTreeProc:
         pass
 
 
-
-
 def test_tree_remote_parse():
     c = make_conn()
     c._uname = "Linux"
@@ -331,22 +364,26 @@ def test_tree_remote_parse():
     assert "find" in calls[-1][-1] and "-printf" in calls[-1][-1]
 
     c._uname = "Darwin"
-    c._spawn = lambda argv, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE: \
+    c._spawn = lambda argv, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE: (
         FakeTreeProc(b"/tmp/base/a.txt 4\n")
+    )
     tree2 = c.tree_remote("/tmp/base")
     assert tree2 == {"a.txt": 4}
 
-    c._spawn = lambda argv, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE: \
+    c._spawn = lambda argv, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE: (
         FakeTreeProc(b"", err=b"no such file", rc=1)
+    )
     assert c.tree_remote("/tmp/base") is None
 
-    c._spawn = lambda argv, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE: \
+    c._spawn = lambda argv, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE: (
         FakeTreeProc(b"garbage\n/tmp/base/x 2\n")
+    )
     assert c.tree_remote("/tmp/base") == {"x": 2}
 
     # a stalled listing returns None instead of hanging forever
-    c._spawn = lambda argv, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE: \
+    c._spawn = lambda argv, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE: (
         FakeTreeProc(b"", stall=True)
+    )
     t0 = time.monotonic()
     assert c.tree_remote("/tmp/base", stall=0.1) is None
     assert time.monotonic() - t0 < 5, "stalled listing must not hang"
@@ -358,8 +395,6 @@ def test_tree_remote_parse():
     c._spawn = raise_spawn
     assert c.tree_remote("/tmp/base") is None
     assert "spawn" in c.last_error
-
-
 
 
 class TinyReader:
@@ -375,15 +410,11 @@ class TinyReader:
         pass
 
 
-
-
 class NoCloseBytesIO(io.BytesIO):
     """The pump closes its sink (EOF for the tar pipe); tests need it open."""
 
     def close(self):
         pass
-
-
 
 
 def test_header_counting():
@@ -425,8 +456,6 @@ def test_header_counting():
     assert out2.getvalue() == buf2.getbuffer().tobytes()
 
 
-
-
 def tar_test_conn(dest, src_tree=None):
     c = make_conn()
 
@@ -436,19 +465,23 @@ def tar_test_conn(dest, src_tree=None):
         name = argv[-1]
         return subprocess.Popen(
             ["tar", "-C", parent, "-cf", "-", name],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
     def fake_local_tar(part):
         return subprocess.Popen(
             ["tar", "-C", part, "--strip-components=1", "-xpf", "-"],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
 
     c._spawn_remote_tar = fake_remote_tar
     c._spawn_local_tar = fake_local_tar
     c._reset_master = lambda: None
     return c
-
-
 
 
 def win_tar_test_conn(dest, src):
@@ -479,12 +512,18 @@ def win_tar_test_conn(dest, src):
         cap["name"] = name
         return subprocess.Popen(
             ["tar", "-C", parent.strip("'"), "-cf", "-", "--", name.strip("'")],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
     def fake_local_tar(part):
         return subprocess.Popen(
             ["tar", "-C", part, "--strip-components=1", "-xpf", "-"],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
 
     c._spawn_remote_tar = fake_remote_tar
     c._spawn_local_tar = fake_local_tar
@@ -506,8 +545,12 @@ def test_copy_tar_windows_done():
         c, cap = win_tar_test_conn(dest, src)
         seen = []
         status, detail = c.copy(
-            src, os.path.join(dest, "src"), method="tar", policy=POLICY_OVERWRITE,
-            on_bytes=lambda b, f: seen.append((b, f)))
+            src,
+            os.path.join(dest, "src"),
+            method="tar",
+            policy=POLICY_OVERWRITE,
+            on_bytes=lambda b, f: seen.append((b, f)),
+        )
         assert status == "done"
         assert detail == os.path.join(dest, "src")
         assert open(os.path.join(dest, "src", "a.txt")).read() == "hello"
@@ -550,18 +593,28 @@ def test_copy_tar_windows_failure():
             assert cmd.startswith("powershell -NoProfile -EncodedCommand ")
             return subprocess.Popen(
                 ["sh", "-c", "echo boom >&2; exit 1"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
 
         def fake_local_tar(part):
             return subprocess.Popen(
                 ["tar", "-C", part, "--strip-components=1", "-xpf", "-"],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
 
         c._spawn_remote_tar = fake_remote_tar
         c._spawn_local_tar = fake_local_tar
         c._reset_master = lambda: None
-        status, detail = c.copy(r"f:\Games\Age of Empire-II The Conquerors",
-                                dest, method="tar", policy=POLICY_OVERWRITE)
+        status, detail = c.copy(
+            r"f:\Games\Age of Empire-II The Conquerors",
+            dest,
+            method="tar",
+            policy=POLICY_OVERWRITE,
+        )
         assert status == "failed"
         assert "boom" in detail
         assert parts_in(dest) == []
@@ -583,8 +636,12 @@ def test_copy_tar_done():
         c = tar_test_conn(dest)
         seen = []
         status, detail = c.copy(
-            src, os.path.join(dest, "src"), method="tar", policy=POLICY_OVERWRITE,
-            on_bytes=lambda b, f: seen.append((b, f)))
+            src,
+            os.path.join(dest, "src"),
+            method="tar",
+            policy=POLICY_OVERWRITE,
+            on_bytes=lambda b, f: seen.append((b, f)),
+        )
         assert status == "done"
         assert detail == os.path.join(dest, "src")
         assert open(os.path.join(dest, "src", "a.txt")).read() == "hello"
@@ -599,8 +656,6 @@ def test_copy_tar_done():
         shutil.rmtree(d)
 
 
-
-
 def test_copy_tar_failure():
     d = tempfile.mkdtemp()
     try:
@@ -611,12 +666,18 @@ def test_copy_tar_failure():
         def fake_remote_tar(cmd, env):
             return subprocess.Popen(
                 ["sh", "-c", "echo boom >&2; exit 1"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
 
         def fake_local_tar(part):
             return subprocess.Popen(
                 ["tar", "-C", part, "--strip-components=1", "-xpf", "-"],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
 
         c._spawn_remote_tar = fake_remote_tar
         c._spawn_local_tar = fake_local_tar
@@ -629,8 +690,6 @@ def test_copy_tar_failure():
         shutil.rmtree(d)
 
 
-
-
 def test_copy_tar_killed():
     d = tempfile.mkdtemp()
     try:
@@ -641,12 +700,18 @@ def test_copy_tar_killed():
         def fake_remote_tar(cmd, env):
             return subprocess.Popen(
                 ["sleep", "30"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
 
         def fake_local_tar(part):
             return subprocess.Popen(
                 ["tar", "-C", part, "--strip-components=1", "-xpf", "-"],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
 
         c._spawn_remote_tar = fake_remote_tar
         c._spawn_local_tar = fake_local_tar
@@ -654,7 +719,9 @@ def test_copy_tar_killed():
         result = {}
 
         def run():
-            result["out"] = c.copy("/r/dir", dest, method="tar", policy=POLICY_OVERWRITE)
+            result["out"] = c.copy(
+                "/r/dir", dest, method="tar", policy=POLICY_OVERWRITE
+            )
 
         th = threading.Thread(target=run)
         th.start()
@@ -669,8 +736,6 @@ def test_copy_tar_killed():
         shutil.rmtree(d)
 
 
-
-
 def test_copy_tar_spawn_failure_cleans_up():
     d = tempfile.mkdtemp()
     try:
@@ -682,7 +747,10 @@ def test_copy_tar_spawn_failure_cleans_up():
         def fake_remote_tar(cmd, env):
             p = subprocess.Popen(
                 ["sleep", "30"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
             spawned.append(p)
             return p
 
@@ -692,8 +760,12 @@ def test_copy_tar_spawn_failure_cleans_up():
         c._spawn_remote_tar = fake_remote_tar
         c._spawn_local_tar = fake_local_tar
         try:
-            c.copy("/r/dir", os.path.join(dest, "dir"), method="tar",
-                   policy=POLICY_OVERWRITE)
+            c.copy(
+                "/r/dir",
+                os.path.join(dest, "dir"),
+                method="tar",
+                policy=POLICY_OVERWRITE,
+            )
             raised = False
         except FileNotFoundError:
             raised = True
@@ -702,12 +774,14 @@ def test_copy_tar_spawn_failure_cleans_up():
         assert c._procs == [], "no process leaked"
         assert spawned, "remote tar must have spawned"
         for p in spawned:
-            assert p.stdout is None or p.stdout.closed, "remote stdout pipe must be closed"
-            assert p.stderr is None or p.stderr.closed, "remote stderr pipe must be closed"
+            assert p.stdout is None or p.stdout.closed, (
+                "remote stdout pipe must be closed"
+            )
+            assert p.stderr is None or p.stderr.closed, (
+                "remote stderr pipe must be closed"
+            )
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_run_spawn_failure_cleans_errf():
@@ -727,8 +801,6 @@ def test_run_spawn_failure_cleans_errf():
     assert "spawn failed" in err
     leftovers_after = set(glob.glob("/tmp/lan-copier-err-*"))
     assert leftovers_after == leftovers_before, "errf temp file must be cleaned up"
-
-
 
 
 def test_wait_or_kill_stalls():
@@ -761,8 +833,6 @@ def test_wait_or_kill_stalls():
     assert p2.waits == 1, "old activity stalls on the first poll"
 
 
-
-
 def test_copy_tar_stall_cleans_up():
     d = tempfile.mkdtemp()
     try:
@@ -772,13 +842,19 @@ def test_copy_tar_stall_cleans_up():
 
         def fake_remote_tar(cmd, env):
             return subprocess.Popen(
-                ["sleep", "30"], stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                ["sleep", "30"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
 
         def fake_local_tar(part):
             return subprocess.Popen(
-                ["sleep", "30"], stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                ["sleep", "30"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
 
         c._spawn_remote_tar = fake_remote_tar
         c._spawn_local_tar = fake_local_tar
@@ -791,8 +867,6 @@ def test_copy_tar_stall_cleans_up():
         assert c._procs == [], "no process leaked after stall"
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_wait_or_kill_skips_stall_while_paused():
@@ -822,8 +896,6 @@ def test_wait_or_kill_skips_stall_while_paused():
     assert p2.killed and rc2 == "STALLED", "unpaused transfer must still stall"
 
 
-
-
 def test_wait_or_kill_no_stall():
     c = make_conn()
 
@@ -844,8 +916,6 @@ def test_wait_or_kill_no_stall():
     p = FakeP(5)
     rc = c._wait_or_kill(p, {"t": time.monotonic() - 1000}, stall=None)
     assert rc == 0 and not p.killed, "stall=None must never stall"
-
-
 
 
 def test_pause_resume_transport():
@@ -890,16 +960,17 @@ def test_pause_resume_transport():
     assert all(n != "x" for n, _ in calls), "other transfers must not be stopped"
 
     c.resume(sink)
-    assert calls[-3:] == [("a", signal.SIGCONT), ("b", signal.SIGCONT),
-                          ("c", signal.SIGCONT)]
+    assert calls[-3:] == [
+        ("a", signal.SIGCONT),
+        ("b", signal.SIGCONT),
+        ("c", signal.SIGCONT),
+    ]
     assert c._paused == []
 
     c.kill_procs(sink)
     assert a.dead and cc.dead
     assert c._paused == [] and c._paused_sink_ids == set()
     assert not c._procs, "kill_procs must untrack"
-
-
 
 
 def test_copy_removes_stale_part():
@@ -921,12 +992,12 @@ def test_copy_removes_stale_part():
         c._copy_tar = fake_copy_tar
         st, _ = c.copy("/r/x", dest, method="tar", proc_sink=[])
         assert st == "done"
-        assert not os.path.exists(stale), "stale part must be removed before a fresh copy"
+        assert not os.path.exists(stale), (
+            "stale part must be removed before a fresh copy"
+        )
         assert os.path.isfile(dest), "fresh copy placed at the final name"
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_copy_closes_pipes():
@@ -957,13 +1028,12 @@ def test_copy_closes_pipes():
         src = os.path.join(d, "src")
         os.makedirs(src)
         open(os.path.join(src, "a"), "w").write("x")
-        st2, _ = c2.copy(src, os.path.join(d, "t", "src"), method="tar",
-                         policy=POLICY_OVERWRITE)
+        st2, _ = c2.copy(
+            src, os.path.join(d, "t", "src"), method="tar", policy=POLICY_OVERWRITE
+        )
         assert st2 == "done"
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_no_fd_leak():
@@ -979,19 +1049,17 @@ def test_no_fd_leak():
         os.makedirs(src)
         open(os.path.join(src, "a"), "w").write("x")
         for _ in range(10):
-            st, _ = c.copy(src, os.path.join(dest, "copy"), method="tar",
-                           policy=POLICY_OVERWRITE)
+            st, _ = c.copy(
+                src, os.path.join(dest, "copy"), method="tar", policy=POLICY_OVERWRITE
+            )
             assert st == "done"
             dest = dest  # reuse path? no: unique_path used
         before = len(os.listdir("/proc/self/fd"))
         time.sleep(0.3)
         after = len(os.listdir("/proc/self/fd"))
-        assert after - before <= 4, \
-            f"file descriptors leaked: {before} -> {after}"
+        assert after - before <= 4, f"file descriptors leaked: {before} -> {after}"
     finally:
         shutil.rmtree(d)
-
-
 
 
 def test_run_spawn_failure_graceful():
@@ -1010,28 +1078,27 @@ def test_run_spawn_failure_graceful():
     assert "spawn failed" in err
 
 
-
-
 def test_ls_epoch():
     """'ls -la' C-locale mtimes parse into a sortable epoch; unparseable
     input degrades to 0 (sorts last) instead of raising."""
     from ssh_transport import SSHConnection
+
     now = time.localtime()
     ts = SSHConnection._ls_epoch("Aug", "20", "14:30")
     lt = time.localtime(ts)
     assert ts > 0
     assert (lt.tm_mon, lt.tm_mday, lt.tm_hour, lt.tm_min) == (8, 20, 14, 30)
-    assert lt.tm_year in (now.tm_year, now.tm_year - 1), \
+    assert lt.tm_year in (now.tm_year, now.tm_year - 1), (
         "no-year entries use the current year (rolled back when future)"
-    assert SSHConnection._ls_epoch("Dec", "31", "23:59") <= time.time() + 86400, \
+    )
+    assert SSHConnection._ls_epoch("Dec", "31", "23:59") <= time.time() + 86400, (
         "future-ish entries must roll back a year"
+    )
     ts = SSHConnection._ls_epoch("Aug", "20", "2020")
     assert time.localtime(ts).tm_year == 2020
     assert SSHConnection._ls_epoch("?", "?", "?") == 0
     assert SSHConnection._ls_epoch("Aug", "99", "14:30") == 0
     assert SSHConnection._ls_epoch("Aug", "20", "nope") == 0
-
-
 
 
 def test_expand_remote():
@@ -1044,16 +1111,13 @@ def test_expand_remote():
     assert c.expand_remote("~/x") == "~/x", "unresolvable home leaves path alone"
 
 
-
-
 def test_escape_remote_dollar():
     assert SSHConnection._escape_remote("a$b c`d") == r"a\$b\ c\`d"
     assert SSHConnection._escape_remote("-flag") == "./-flag"
     assert SSHConnection._escape_remote("/p/l é") == r"/p/l\ é"
-    assert SSHConnection._escape_remote("a\nb") == "a\nb", \
+    assert SSHConnection._escape_remote("a\nb") == "a\nb", (
         "newlines pass through untouched (SFTP handles them raw)"
-
-
+    )
 
 
 def test_copy_scp_mux_dead_retry():
@@ -1105,8 +1169,6 @@ def test_copy_scp_mux_dead_retry():
         shutil.rmtree(d)
 
 
-
-
 def test_tree_remote_mux_dead_retry():
     c = make_conn()
     c._uname = "Linux"
@@ -1117,7 +1179,9 @@ def test_tree_remote_mux_dead_retry():
     def spawn(argv, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE):
         calls.append(argv)
         if len(calls) == 1:
-            return FakeTreeProc(b"", err=b"packet_write failed: Connection closed", rc=1)
+            return FakeTreeProc(
+                b"", err=b"packet_write failed: Connection closed", rc=1
+            )
         return FakeTreeProc(b"/tmp/base/a.txt 4\n")
 
     c._spawn = spawn
@@ -1125,8 +1189,6 @@ def test_tree_remote_mux_dead_retry():
     assert tree == {"a.txt": 4}
     assert len(calls) == 2, "mux-dead listing must retry once"
     assert len(resets) == 1
-
-
 
 
 def test_ssh_delete_item():
@@ -1145,7 +1207,10 @@ def test_ssh_delete_item():
     assert len(recorded) == 1
     cmd_str = " ".join(recorded[0])
     assert "rm -rf --" in cmd_str
-    assert "my\\ file\\ \\$1\\ \\'quote\\'\\ \\&\\ more.txt" in cmd_str or "my file" in cmd_str
+    assert (
+        "my\\ file\\ \\$1\\ \\'quote\\'\\ \\&\\ more.txt" in cmd_str
+        or "my file" in cmd_str
+    )
 
     # Failure reporting
     c._run_cmd = lambda argv, timeout=None: (1, "", "Permission denied")
@@ -1155,7 +1220,10 @@ def test_ssh_delete_item():
 
     # EPERM failures get actionable, OS-agnostic hints appended
     c._run_cmd = lambda argv, timeout=None: (
-        1, "", "rm: /Volumes/Data/x.7z: Operation not permitted")
+        1,
+        "",
+        "rm: /Volumes/Data/x.7z: Operation not permitted",
+    )
     ok, err = c.delete_item("/Volumes/Data/x.7z")
     assert ok is False
     assert "Operation not permitted" in err
@@ -1164,8 +1232,6 @@ def test_ssh_delete_item():
     assert "read-only" in low
     for word in ("chflags",):  # must stay OS-agnostic (no mac-only tool names)
         assert word not in err
-
-
 
 
 def test_ssh_delete_protected_paths():
@@ -1181,8 +1247,6 @@ def test_ssh_delete_protected_paths():
     assert len(called) == 0, "No SSH command should run for protected paths"
 
 
-
-
 def test_kind_marker():
     assert SSHConnection.kind == "ssh"
     assert LocalConnection.kind == "local"
@@ -1190,7 +1254,9 @@ def test_kind_marker():
 
 
 def test_parse_ps_list_bom_crlf():
-    out = "\ufeff1\t0\t100\t1700000000\tname.txt\r\n0\t1\t7\t1700000001\tlink me.txt\r\n"
+    out = (
+        "\ufeff1\t0\t100\t1700000000\tname.txt\r\n0\t1\t7\t1700000001\tlink me.txt\r\n"
+    )
     items = SSHConnection._parse_ps_list(out)
     assert len(items) == 2
     assert items[0]["name"] == "name.txt"
@@ -1217,6 +1283,7 @@ ALL_TESTS = (
     test_local_size,
     test_replace_failure_cleans_part,
     test_stat_remote_parse,
+    test_disk_space_parse,
     test_tree_remote_parse,
     test_header_counting,
     test_copy_tar_done,

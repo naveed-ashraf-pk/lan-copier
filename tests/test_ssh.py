@@ -451,6 +451,124 @@ def tar_test_conn(dest, src_tree=None):
 
 
 
+def win_tar_test_conn(dest, src):
+    """Conn that fakes a Windows source for `_copy_tar`: `_spawn_remote_tar`
+    must receive a PowerShell -EncodedCommand blob (never a POSIX 'LC_ALL=C'
+    command). The blob is decoded and re-run as a real local tar so the whole
+    capture/place pipeline executes end-to-end. parent/name captured for
+    assertions so family-aware derivation can be checked."""
+    c = make_conn()
+    c._os_type = "Windows"
+    c._has_tar = True
+    cap = {}
+
+    def fake_remote_tar(cmd, env):
+        assert "LC_ALL=" not in cmd, cmd
+        assert cmd.startswith("powershell -NoProfile -EncodedCommand ")
+        body = _ps_decode(cmd)
+        cap["body"] = body
+        assert "tar.exe" in body
+        assert "-xpf" not in body  # read, not extract
+        parent = name = None
+        toks = body.split()
+        if "-C" in toks:
+            parent = toks[toks.index("-C") + 1]
+        if "--" in toks:
+            name = toks[toks.index("--") + 1]
+        cap["parent"] = parent
+        cap["name"] = name
+        return subprocess.Popen(
+            ["tar", "-C", parent.strip("'"), "-cf", "-", "--", name.strip("'")],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def fake_local_tar(part):
+        return subprocess.Popen(
+            ["tar", "-C", part, "--strip-components=1", "-xpf", "-"],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    c._spawn_remote_tar = fake_remote_tar
+    c._spawn_local_tar = fake_local_tar
+    c._reset_master = lambda: None
+    return c, cap
+
+
+def test_copy_tar_windows_done():
+    d = tempfile.mkdtemp()
+    try:
+        src = os.path.join(d, "src")
+        os.makedirs(os.path.join(src, "sub"))
+        open(os.path.join(src, "a.txt"), "w").write("hello")
+        open(os.path.join(src, "sub", "b.txt"), "w").write("world")
+        os.makedirs(os.path.join(src, "empty"))
+        os.symlink("a.txt", os.path.join(src, "link.txt"))
+        dest = os.path.join(d, "dest")
+        os.makedirs(dest)
+        c, cap = win_tar_test_conn(dest, src)
+        seen = []
+        status, detail = c.copy(
+            src, os.path.join(dest, "src"), method="tar", policy=POLICY_OVERWRITE,
+            on_bytes=lambda b, f: seen.append((b, f)))
+        assert status == "done"
+        assert detail == os.path.join(dest, "src")
+        assert open(os.path.join(dest, "src", "a.txt")).read() == "hello"
+        assert open(os.path.join(dest, "src", "sub", "b.txt")).read() == "world"
+        assert os.path.isdir(os.path.join(dest, "src", "empty"))
+        assert os.path.islink(os.path.join(dest, "src", "link.txt"))
+        assert parts_in(dest) == []
+        total, files = seen[-1]
+        assert total > 0
+        assert files == 2, files
+        # family-aware derivation: parent = dirname(src), name = basename(src)
+        assert cap["name"] == "'src'", cap
+        assert os.path.abspath(cap["parent"].strip("'")) == os.path.dirname(src), cap
+    finally:
+        shutil.rmtree(d)
+
+
+def test_copy_tar_windows_backslash_path():
+    c = make_conn()
+    c._os_type = "Windows"
+    c._has_tar = True
+    cmd = c._tar_read_cmd(r"f:\Games\Age of Empire-II The Conquerors")
+    assert "LC_ALL=" not in cmd
+    body = _ps_decode(cmd)
+    assert "tar.exe" in body
+    assert "-C 'f:\\Games'" in body, body
+    assert "'Age of Empire-II The Conquerors'" in body, body
+
+
+def test_copy_tar_windows_failure():
+    d = tempfile.mkdtemp()
+    try:
+        dest = os.path.join(d, "dest")
+        os.makedirs(dest)
+        c = make_conn()
+        c._os_type = "Windows"
+
+        def fake_remote_tar(cmd, env):
+            assert "LC_ALL=" not in cmd
+            assert cmd.startswith("powershell -NoProfile -EncodedCommand ")
+            return subprocess.Popen(
+                ["sh", "-c", "echo boom >&2; exit 1"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        def fake_local_tar(part):
+            return subprocess.Popen(
+                ["tar", "-C", part, "--strip-components=1", "-xpf", "-"],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+        c._spawn_remote_tar = fake_remote_tar
+        c._spawn_local_tar = fake_local_tar
+        c._reset_master = lambda: None
+        status, detail = c.copy(r"f:\Games\Age of Empire-II The Conquerors",
+                                dest, method="tar", policy=POLICY_OVERWRITE)
+        assert status == "failed"
+        assert "boom" in detail
+        assert parts_in(dest) == []
+    finally:
+        shutil.rmtree(d)
+
+
 def test_copy_tar_done():
     d = tempfile.mkdtemp()
     try:
@@ -1103,6 +1221,9 @@ ALL_TESTS = (
     test_header_counting,
     test_copy_tar_done,
     test_copy_tar_failure,
+    test_copy_tar_windows_done,
+    test_copy_tar_windows_backslash_path,
+    test_copy_tar_windows_failure,
     test_copy_tar_killed,
     test_copy_tar_spawn_failure_cleans_up,
     test_run_spawn_failure_cleans_errf,

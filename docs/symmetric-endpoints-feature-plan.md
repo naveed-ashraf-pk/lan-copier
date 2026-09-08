@@ -435,5 +435,5 @@ Concrete, testable statements per functional requirement — used as the go/no-g
 - Legacy `ui.py`/`panes.py`/`profiles.py`/`tests/test_ui.py` **deleted** (archived under `docs/old/legacy-ui/`).
 
 **Known / deferred (needs real hardware):**
-- Windows **source**→local copy uses a POSIX `tar` command in `ssh_transport._copy_tar` (no Windows branch); the symmetric **destination** path uses `tar.exe`. Validate on a real Windows host.
+- Windows **source**→local copy is **fixed**: `_copy_tar` and `transfer_engine._reader_cmd` now share `SSHConnection._tar_read_cmd` (family-aware parent/name + Windows `tar.exe` branch). Still worth a real-Windows confirmation run.
 - Real-host pass on Mac + Windows (browse/transfer/compare/delete/export, non-ASCII filenames) — session 3's harness already covered local + SSH-dest behavior without a network host.

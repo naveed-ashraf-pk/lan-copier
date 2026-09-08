@@ -641,8 +641,24 @@ class SSHConnection:
         proc._lancopier_tmpd = d
         return proc
 
-    def _remote_parent(self, path):
-        return rp.dirname(str(path).rstrip("/"), self.family) or "/"
+    def _tar_read_cmd(self, remote_path):
+        """Build the remote command that streams <remote_path> (folder or file)
+        as a tar archive on this endpoint's stdout. Single source of truth for
+        both the legacy `_copy_tar` pipeline and the transfer engine. Parent and
+        basename are derived with this endpoint's path family, and the command
+        is OS-aware: tar.exe via -EncodedCommand on Windows, POSIX tar
+        otherwise.
+
+        The family is read from the cached `_os_type` only (never forcing OS
+        detection, matching `_os_windows`), defaulting to posix while unknown —
+        the same semantics the legacy `_copy_tar` had via os.path, and safe
+        because detection always precedes a transfer in practice."""
+        fam = rp.family_for(self._os_type) if self._os_type else "posix"
+        parent = rp.dirname(str(remote_path).rstrip("/"), fam) or "/"
+        name = rp.basename(remote_path, fam)
+        if self._os_windows():
+            return ps_cmd.tar_read(parent, name)
+        return posix_cmd.tar_read_remote(parent, name)
 
     def remote_part_path(self, final):
         """A fresh staging path for `final` on this endpoint (same directory
@@ -988,9 +1004,7 @@ class SSHConnection:
         progress for a while (no bytes flowing through the pump), the copy is
         killed and reported as failed instead of hanging forever."""
         os.makedirs(part, exist_ok=True)
-        parent = os.path.dirname(remote_path.rstrip("/")) or "/"
-        name = os.path.basename(remote_path.rstrip("/"))
-        remote_cmd = "LC_ALL=C tar -C " + shlex.quote(parent) + " -cf - -- " + shlex.quote(name)
+        remote_cmd = self._tar_read_cmd(remote_path)
         env, d = self._askpass_env()
         try:
             attempts = 2

@@ -122,7 +122,7 @@ Fixed (all active in the new code + regression-tested):
 
 Open/notes (not bugs, for review):
 - **`compare + filter`**: `_compare_done` iterates the base model (not the filtered view), so hidden rows ARE included in the selection; the "compare skips hidden rows" note in the older docs was inaccurate. No change needed.
-- **Windows SSH *source* copy** (`ssh_transport._copy_tar`, line ~972) still issues a POSIX `tar -C` command with no Windows (`tar.exe`) branch. The symmetric **destination** path is correct (tar.exe). Needs a real-Windows source→dest run; if it fails, port `_copy_tar` to branch on `_os_windows()` (use `commands/powershell.py tar_read/tar_extract`) exactly like `transfer_engine._spawn_reader/_spawn_extractor` already do.
+- **Windows SSH *source* copy — FIXED**: `ssh_transport._copy_tar` was issuing a POSIX `tar -C` command with no Windows (`tar.exe`) branch, so a Windows source → local dest folder transfer failed (`'LC_ALL' is not recognized...`). Now both `_copy_tar` and `transfer_engine._reader_cmd` share a single source of truth, `SSHConnection._tar_read_cmd(remote_path)`, which derives parent/name with the endpoint family and branches on `_os_windows()` (`ps_cmd.tar_read` tar.exe via `-EncodedCommand` vs `posix_cmd.tar_read_remote`). Regression: `test_copy_tar_windows_*` in tests/test_ssh.py.
 
 ### 2.3 Cleanup — DONE (session 4)
 Legacy `ui.py`, `panes.py`, root `profiles.py`, `tests/test_ui.py` deleted and archived under `docs/old/legacy-ui/` for reference. Remaining cleanup (only if desired, low priority): fold the `app/__init__.py` docstring to describe the package.

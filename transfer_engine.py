@@ -255,11 +255,7 @@ def _spawn_reader(src, src_path):
 
 
 def _reader_cmd(conn, src_path):
-    parent = conn._remote_parent(src_path)
-    name = rp.basename(src_path, conn.family)
-    if conn._os_windows():
-        return ps_cmd.tar_read(parent, name)
-    return posix_cmd.tar_read_remote(parent, name)
+    return conn._tar_read_cmd(src_path)
 
 
 def _spawn_extractor(dest, part):

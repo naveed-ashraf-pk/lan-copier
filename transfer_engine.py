@@ -25,9 +25,21 @@ POLICY_OVERWRITE = "overwrite"
 STALL_SECONDS = 120.0
 
 
-def run(dest, src, src_path, dest_path, policy=POLICY_ASK, method="scp",
-        is_dir=None, on_ask=None, on_part=None, on_bytes=None, proc_sink=None,
-        on_finish=None):
+def run(
+    dest,
+    src,
+    src_path,
+    dest_path,
+    policy=POLICY_ASK,
+    method="scp",
+    is_dir=None,
+    on_ask=None,
+    on_part=None,
+    on_bytes=None,
+    proc_sink=None,
+    on_finish=None,
+    on_merge=None,
+):
     """Copy `src_path` on `src` onto `dest_path` on `dest`.
 
     Returns (status, detail) with status ∈ done/skipped/failed/aborted/
@@ -35,16 +47,44 @@ def run(dest, src, src_path, dest_path, policy=POLICY_ASK, method="scp",
     is auto-detected on the source endpoint.
     """
     if dest.kind == "local":
-        return src._copy_legacy(src_path, dest_path, policy=policy,
-                                method=method, on_ask=on_ask, on_part=on_part,
-                                on_bytes=on_bytes, proc_sink=proc_sink,
-                                on_finish=on_finish)
-    return _remote_dest_copy(dest, src, src_path, dest_path, policy, is_dir,
-                             on_ask, on_part, on_bytes, proc_sink, on_finish)
+        return src._copy_legacy(
+            src_path,
+            dest_path,
+            policy=policy,
+            method=method,
+            on_ask=on_ask,
+            on_part=on_part,
+            on_bytes=on_bytes,
+            proc_sink=proc_sink,
+            on_finish=on_finish,
+            on_merge=on_merge,
+        )
+    return _remote_dest_copy(
+        dest,
+        src,
+        src_path,
+        dest_path,
+        policy,
+        is_dir,
+        on_ask,
+        on_part,
+        on_bytes,
+        proc_sink,
+        on_finish,
+    )
 
 
-def move(dest, src, src_path, dest_path, policy=POLICY_ASK,
-         on_ask=None, on_bytes=None, proc_sink=None):
+def move(
+    dest,
+    src,
+    src_path,
+    dest_path,
+    policy=POLICY_ASK,
+    on_ask=None,
+    on_bytes=None,
+    proc_sink=None,
+    on_merge=None,
+):
     """Move `src_path` from `src` to `dest_path` on `dest`.
 
     Same-endpoint moves that are not own-subtree and not self-overwrite become
@@ -86,29 +126,55 @@ def move(dest, src, src_path, dest_path, policy=POLICY_ASK,
             # cross-filesystem rename -> fall through to the streaming bridge
 
     # bridge move: transfer per policy, delete the source only on success
-    status, detail = run(dest, src, src_path, dest_path, policy=policy,
-                         on_ask=on_ask, on_bytes=on_bytes, proc_sink=proc_sink)
+    status, detail = run(
+        dest,
+        src,
+        src_path,
+        dest_path,
+        policy=policy,
+        on_ask=on_ask,
+        on_bytes=on_bytes,
+        proc_sink=proc_sink,
+        on_merge=on_merge,
+    )
     if status != "done":
         return status, detail
     ok, err = src.delete(src_path)
     if not ok:
-        return "copied", (f"copied to {detail}, but the source could not be "
-                          f"deleted: {err}")
+        return "copied", (
+            f"copied to {detail}, but the source could not be deleted: {err}"
+        )
     return "done", detail
 
 
 def _cross_device(err):
     low = (err or "").lower()
-    return ("invalid cross-device" in low or "cross-device link" in low
-            or "exdev" in low or "different device" in low)
+    return (
+        "invalid cross-device" in low
+        or "cross-device link" in low
+        or "exdev" in low
+        or "different device" in low
+    )
 
 
 # ---------------------------------------------------------------------------
 # remote destination
 # ---------------------------------------------------------------------------
 
-def _remote_dest_copy(dest, src, src_path, dest_path, policy, is_dir,
-                      on_ask, on_part, on_bytes, proc_sink, on_finish):
+
+def _remote_dest_copy(
+    dest,
+    src,
+    src_path,
+    dest_path,
+    policy,
+    is_dir,
+    on_ask,
+    on_part,
+    on_bytes,
+    proc_sink,
+    on_finish,
+):
     if not dest._ensure_master():
         return "failed", dest.last_error or "destination not reachable"
     if src.kind == "ssh" and not src._ensure_master():
@@ -161,8 +227,9 @@ def _remote_dest_copy(dest, src, src_path, dest_path, policy, is_dir,
                 on_part(part)
             except Exception:
                 pass
-        status, detail = _stream(part, final, src_basename, is_dir,
-                                 dest, src, src_path, on_bytes, proc_sink)
+        status, detail = _stream(
+            part, final, src_basename, is_dir, dest, src, src_path, on_bytes, proc_sink
+        )
         if status == "done":
             if on_finish is not None:
                 try:
@@ -178,8 +245,9 @@ def _remote_dest_copy(dest, src, src_path, dest_path, policy, is_dir,
             dest.rm_remote(part, recursive=True)
 
 
-def _stream(part, final, src_basename, is_dir, dest, src, src_path,
-            on_bytes, proc_sink):
+def _stream(
+    part, final, src_basename, is_dir, dest, src, src_path, on_bytes, proc_sink
+):
     """Pipe a tar stream from the source reader into the dest extractor and,
     on success, place the single produced entry onto `final`."""
     reader = _spawn_reader(src, src_path)
@@ -205,7 +273,9 @@ def _stream(part, final, src_basename, is_dir, dest, src, src_path,
 
     th = threading.Thread(
         target=SSHConnection._pump,
-        args=(reader.stdout, extractor.stdin, on_activity), daemon=True)
+        args=(reader.stdout, extractor.stdin, on_activity),
+        daemon=True,
+    )
     th.start()
     try:
         reader_rc = _wait(reader, last_activity)
@@ -238,6 +308,7 @@ def _stream(part, final, src_basename, is_dir, dest, src, src_path,
 # process helpers
 # ---------------------------------------------------------------------------
 
+
 def _spawn_reader(src, src_path):
     if src.kind == "local":
         clean = src_path.rstrip("/")
@@ -246,8 +317,10 @@ def _spawn_reader(src, src_path):
         try:
             return subprocess.Popen(
                 posix_cmd.tar_read_local(parent, name),
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE)
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
         except OSError as e:
             src.last_error = f"local tar spawn failed: {e}"
             return None
@@ -260,8 +333,11 @@ def _reader_cmd(conn, src_path):
 
 def _spawn_extractor(dest, part):
     return dest.spawn_ssh(
-        ps_cmd.tar_extract(part) if dest._os_windows()
-        else posix_cmd.tar_extract_remote(part), stdin=subprocess.PIPE)
+        ps_cmd.tar_extract(part)
+        if dest._os_windows()
+        else posix_cmd.tar_extract_remote(part),
+        stdin=subprocess.PIPE,
+    )
 
 
 def _attach(proc, conn, sink):
@@ -281,8 +357,11 @@ def _close_proc(proc, conn):
             proc.wait(timeout=5)
         except (subprocess.TimeoutExpired, OSError):
             pass
-    for f in (getattr(proc, "stdin", None), getattr(proc, "stdout", None),
-              getattr(proc, "stderr", None)):
+    for f in (
+        getattr(proc, "stdin", None),
+        getattr(proc, "stdout", None),
+        getattr(proc, "stderr", None),
+    ):
         if f is not None:
             try:
                 f.close()
@@ -291,6 +370,7 @@ def _close_proc(proc, conn):
     tmpd = getattr(proc, "_lancopier_tmpd", None)
     if tmpd:
         import shutil
+
         shutil.rmtree(tmpd, ignore_errors=True)
     if conn is not None:
         try:
@@ -353,11 +433,21 @@ def _place_remote(dest, part, entry, final, entry_is_dir):
 def _merge_dir_remote(dest, part, entry, final):
     if dest._os_windows():
         cmd = ps_cmd.merge_into(entry, final)
-        rc, _, err = dest._run_cmd(["ssh"] + dest._opts() + [dest.target, cmd], timeout=None)
+        rc, _, err = dest._run_cmd(
+            ["ssh"] + dest._opts() + [dest.target, cmd], timeout=None
+        )
     else:
-        remote = ("sh -c " + _shlex.quote(posix_cmd.merge_dir_script()) + " x "
-                  + _shlex.quote(entry) + " " + _shlex.quote(final))
-        rc, _, err = dest._run_cmd(["ssh"] + dest._opts() + [dest.target, remote], timeout=None)
+        remote = (
+            "sh -c "
+            + _shlex.quote(posix_cmd.merge_dir_script())
+            + " x "
+            + _shlex.quote(entry)
+            + " "
+            + _shlex.quote(final)
+        )
+        rc, _, err = dest._run_cmd(
+            ["ssh"] + dest._opts() + [dest.target, remote], timeout=None
+        )
     if rc == 0:
         dest.rm_remote(entry, recursive=True)
         dest.rmdir(part)

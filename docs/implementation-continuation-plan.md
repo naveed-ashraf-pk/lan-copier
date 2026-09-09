@@ -1,6 +1,6 @@
 # lan-copier — Implementation Plan + Session Handoff (compacted)
 
-**Date:** 2026-09-08 (session 8: destination disk space + source selection size hint, lazy folder sizes; sessions 5–7 history below)
+**Date:** 2026-09-09 (session 9: transfer-panel progress fixes — 99%-until-done bar cap, working `merging…` state with per-entry merge progress, SSH-dest method normalization; sessions 5–8 history below)
 **Status:** clean reimplementation of the UI layer is DONE and green. Legacy `ui.py`/`panes.py`/`profiles.py`/`tests/test_ui.py` have been **deleted** and backed up under `docs/old/legacy-ui/`. **Session 5** fixed duplicate-profile stacking (identity is the resolved remote hostname, schema v3). **Session 6** simplified the bars: each side is a single `EndpointBar` row *inside* its own side column above the `DirPane` (a display-only endpoint label + one popup-driven `conn_btn` that turns green when connected — no dropdown/edit/disconnect buttons), the `ConnectionDialog` popup is now the single place to pick This computer / a saved profile / a new SSH connection and to disconnect, and the DirPane filter/quick-select row moved back **above** the tree. **Session 7** added the ⇄ side swap (endpoint sessions exchange wholesale, see §2.2d) and fixed the export worker to use its snapshot connection. **Session 8** added destination disk-space display + source selection-size hint + lazy folder sizes (see §2.2e; spec: `docs/disk-space-and-selection-hint.requirements.md`). This doc is the **single authoritative handoff**: read it in any new session, then `python3 tests.py` to verify the baseline. Everything below is self-contained.
 
 **Sibling docs:** `symmetric-endpoints-feature-plan.md` (original feature spec, §§1–15), `architecture-and-developer-guide.md`, `AGENTS.md`.
@@ -15,7 +15,7 @@
 
 ## 1. Current state — verified green this session
 
-Run `python3 tests.py` → **ALL TESTS PASSED** (126 unit test fns + `app smoke` + `app remote-dest smoke`).
+Run `python3 tests.py` → **ALL TESTS PASSED** (132 unit test fns + `app smoke` + `app remote-dest smoke`).
 
 ### 1.1 Repository layout (clean, post-cleanup)
 ```
@@ -38,7 +38,7 @@ tests/
   test_commands.py test_ssh.py test_local.py test_engine.py test_export.py
   test_app.py                profiles v2 + classify + AppWindow smokes
 config/
-  profiles.json              (schema v2)
+    profiles.json              (schema v3)
 docs/
   implementation-continuation-plan.md   ← THIS FILE (handoff)
   symmetric-endpoints-feature-plan.md   ← original spec (cross-check at end)
@@ -148,6 +148,43 @@ Folder states now consider recursive sizes (spec §4.4 + `classify_items` row):
 - `LocalConnection.stat_remote` now flags `partial: True` when a file `getsize` fails or `os.walk` hits an unreadable dir (closes the agreed-but-deferred A9). SSH already surfaced failure as `None`→`failed`. Folder byte-count heuristic can't distinguish equal-size different-content folders (tree hashing out of scope).
 - Tests: `test_folder_state_by_size`, `test_folder_state_failed_is_conservative` (window), `test_local_stat_remote_partial` (local), `test_classify_items_full` dir cases.
 
+### 2.2g Session-9: transfer-panel progress fixes (A+B+C+D)
+
+User-reported: the Speed/ETA bar tracked *read* throughput and froze on a long
+`merging…` state worth a "not responding" scare, especially when a fast reader
+fed a slow writer. Analysis: the pump's read count is pipe-throttled to ≈ the
+write rate during streaming (so the read/write split is mostly theoretical), but
+the bar hit 100% at reader EOF while the extractor/merge still ran, and the
+ticker clobbered the `merging…` label within 500 ms. Fixed in the window + local
+transport; the documented read-side accounting (`symmetric-endpoints-feature-plan`
+§4.4) is kept intact as the streaming measure.
+
+- **A — bar never claims done early**: `_update_fraction` caps the live bar at
+  0.99 while `status == "running"`; only `_finish_transfer` shows 100% (on
+  `done`/`skipped`). A full bar now unambiguously means "finished".
+- **B — `merging…` state actually works**: `Transfer.merging` flag set by
+  `_set_merging` (from `on_finish`). `_update_fraction` updates only the bar
+  column while merging (never the text/speed/ETA); `_update_progress` returns
+  early so speed/ETA stay cleared during placement. `_finish_transfer` and
+  `_on_retry` reset the flag.
+- **C — merge-phase progress (local dest)**: new `on_merge(done, total)` callback
+  threaded through `copy → _copy_legacy → _place → _merge_dir` (files-count
+  semantics, ~0.2 s throttle + a forced final `(total, total)` call, matching the
+  `on_bytes` pattern). The window shows `merging… N/M`. Remote-dest placement is a
+  single opaque remote command (no per-entry visibility) → static `merging…`.
+- **D — SSH-dest method normalization**: single-file transfers to an SSH dest are
+  streamed via the tar bridge but were tagged `method="scp"`, so the ticker took
+  the local-`getsize(part)` branch and **never computed speed/ETA**. `_worker` now
+  sets `t.method = "tar"` for every SSH-destination transfer (they always stream),
+  restoring speed/ETA and the `· file N/M` counter there.
+- Tests: `test_merge_dir_reports_progress`, `test_place_fresh_target_skips_merge_callback`
+  (local), `test_transfer_progress_cap_and_merging` (window), plus the remote-dest
+  smoke asserts `t.method == "tar"`. Transport plumbing is backward-compatible
+  (`on_merge` defaults to `None`; the older `_merge_dir(part, final)` calls still work).
+- Open for real-host pass (§2.1): confirm whether the OS "wait or kill"
+  prompt is purely a frozen-progress perception issue or a true main-thread stall
+  (lifecycle tracing found no main-thread blocking in the transfer path).
+
 ### 2.3 Cleanup — DONE (session 4)
 Legacy `ui.py`, `panes.py`, root `profiles.py`, `tests/test_ui.py` deleted and archived under `docs/old/legacy-ui/` for reference. Remaining cleanup (only if desired, low priority): fold the `app/__init__.py` docstring to describe the package.
 
@@ -176,8 +213,9 @@ Legacy `ui.py`, `panes.py`, root `profiles.py`, `tests/test_ui.py` deleted and a
 
 ```
 from app.window import AppWindow            # main.py entry
-from app.connections import ConnectionBar, ConnectionDialog, NEW_ROW
-from app.panels import DirPane, human_size, natural_key, state_color, COL_*
+from app.widgets.dialog import ConnectionDialog, NEW_ROW
+from app.widgets.dirpane import DirPane, human_size, human_size_compact, natural_key, COL_*
+from app.widgets.endpoint import EndpointBar
 from app import profiles as profiles        # profiles.THIS, load/save/names/get/remember_side
 from ssh_transport import SSHConnection, POLICY_*
 from local_transport import LocalConnection, dir_list, dir_tree, delete_local_item
@@ -196,4 +234,4 @@ from discovery import discover
 
 ---
 
-**Next session minimal actions:** `git status` (no commits yet — everything is staged/untracked in the working tree; there is intentionally **no git baseline**), `python3 tests.py`, then 2.1 → 2.3.
+**Next session minimal actions:** `git status`/`git log` (commits exist on `main`; keep new commits focused), `python3 tests.py`, then 2.1 → 2.3.

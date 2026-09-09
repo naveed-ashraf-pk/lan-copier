@@ -628,6 +628,7 @@ class SSHConnection:
         on_bytes=None,
         proc_sink=None,
         on_finish=None,
+        on_merge=None,
     ):
         """Back-compat entry point for a copy that lands on the *local*
         destination. The transfer engine delegates here for local ends; the UI
@@ -643,6 +644,7 @@ class SSHConnection:
             on_bytes=on_bytes,
             proc_sink=proc_sink,
             on_finish=on_finish,
+            on_merge=on_merge,
         )
 
     def _copy_legacy(
@@ -657,6 +659,7 @@ class SSHConnection:
         on_bytes=None,
         proc_sink=None,
         on_finish=None,
+        on_merge=None,
     ):
         """Copy remote_path into local_dest. Returns (status, detail) where
         status is one of "done", "skipped", "failed", "aborted", "cancelled".
@@ -666,6 +669,8 @@ class SSHConnection:
         on_bytes(total, files) is called periodically while streaming.
         on_finish() is called once the stream is complete, just before the
         finished part is placed at its final name.
+        on_merge(done, total) is called while a folder part is merged into an
+        existing destination folder (per-entry placement with no byte counter).
         proc_sink: a list the spawned processes are appended to (and paused
         via pause()/resume()/kill_procs()).
 
@@ -735,7 +740,7 @@ class SSHConnection:
             if os.path.isfile(part) and not os.path.islink(part):
                 self._fsync_file(part)
             try:
-                self._place(part, final)
+                self._place(part, final, on_merge=on_merge)
             except OSError:
                 self._remove(part)
                 raise
@@ -1580,7 +1585,7 @@ class SSHConnection:
                 if not os.path.lexists(cand):
                     return cand
 
-    def _place(self, part, final):
+    def _place(self, part, final, on_merge=None):
         """Move a finished part onto its final name. Files are swapped with
         os.replace() (atomic: old and new exchange in one step). Directories
         merge into an existing final folder entry-by-entry (old content is
@@ -1589,7 +1594,7 @@ class SSHConnection:
         old single entry first, then place the new one."""
         if os.path.isdir(part) and not os.path.islink(part):
             if os.path.isdir(final) and not os.path.islink(final):
-                self._merge_dir(part, final)
+                self._merge_dir(part, final, on_merge=on_merge)
                 self._remove(part)
             else:
                 if os.path.lexists(final):
@@ -1600,24 +1605,46 @@ class SSHConnection:
                 shutil.rmtree(final)
             os.replace(part, final)
 
-    def _merge_dir(self, part, final):
+    def _merge_dir(self, part, final, on_merge=None):
         """Move every entry of part into final, merging with what is already
         there: files replace same-named files atomically, directories
-        recurse. Nothing in final that is not being overwritten is touched."""
-        for name in os.listdir(part):
-            src = os.path.join(part, name)
-            dst = os.path.join(final, name)
-            if os.path.isdir(src) and not os.path.islink(src):
-                if os.path.isdir(dst) and not os.path.islink(dst):
-                    self._merge_dir(src, dst)
-                    continue
-                if os.path.lexists(dst):
-                    os.remove(dst)
-                os.rename(src, dst)
-            else:
-                if os.path.isdir(dst) and not os.path.islink(dst):
-                    shutil.rmtree(dst)
-                os.replace(src, dst)
+        recurse. Nothing in final that is not being overwritten is touched.
+        on_merge(done, total) reports per-entry placement progress (files
+        moved out of part, throttled ~0.2s plus a final call), so a long
+        merge into an existing folder is not a silent stall."""
+        total = sum(len(files) for _, _, files in os.walk(part))
+        done = {"n": 0}
+        last_cb = {"t": 0.0}
+
+        def report():
+            if on_merge is None:
+                return
+            now = time.monotonic()
+            if now - last_cb["t"] >= 0.2:
+                on_merge(done["n"], total)
+                last_cb["t"] = now
+
+        def merge_into(p, f):
+            for name in os.listdir(p):
+                src = os.path.join(p, name)
+                dst = os.path.join(f, name)
+                if os.path.isdir(src) and not os.path.islink(src):
+                    if os.path.isdir(dst) and not os.path.islink(dst):
+                        merge_into(src, dst)
+                        continue
+                    if os.path.lexists(dst):
+                        os.remove(dst)
+                    os.rename(src, dst)
+                else:
+                    if os.path.isdir(dst) and not os.path.islink(dst):
+                        shutil.rmtree(dst)
+                    os.replace(src, dst)
+                done["n"] += 1
+                report()
+
+        merge_into(part, final)
+        if on_merge is not None:
+            on_merge(total, total)
         try:
             os.rmdir(part)
         except OSError:

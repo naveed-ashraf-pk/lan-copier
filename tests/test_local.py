@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import base64
+import itertools
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -664,6 +665,64 @@ def test_merge_dir_preserves_extras():
         shutil.rmtree(d)
 
 
+def test_merge_dir_reports_progress():
+    d = tempfile.mkdtemp()
+    try:
+        import ssh_transport
+
+        c = make_conn()
+        part = os.path.join(d, ".part")
+        final = os.path.join(d, "final")
+        os.makedirs(os.path.join(part, "sub"))
+        open(os.path.join(part, "new.txt"), "w").write("new")
+        open(os.path.join(part, "sub", "inner.txt"), "w").write("inner")
+        os.makedirs(os.path.join(final, "sub"))
+        open(os.path.join(final, "old.txt"), "w").write("old")
+        open(os.path.join(final, "sub", "keep.txt"), "w").write("keep")
+        calls = []
+        real = ssh_transport.time.monotonic
+        step = itertools.count()
+        ssh_transport.time.monotonic = lambda: (next(step) + 1) * 5.0
+        try:
+            c._merge_dir(part, final, on_merge=lambda n, t: calls.append((n, t)))
+        finally:
+            ssh_transport.time.monotonic = real
+        # merged contents + extras preserved (regression guard)
+        assert open(os.path.join(final, "new.txt")).read() == "new"
+        assert open(os.path.join(final, "sub", "inner.txt")).read() == "inner"
+        assert open(os.path.join(final, "old.txt")).read() == "old"
+        assert open(os.path.join(final, "sub", "keep.txt")).read() == "keep"
+        assert not os.path.exists(part), "merged part dir is emptied and removed"
+        # progress climbs to the file count and ends exactly at completion
+        assert calls, "merge must report progress"
+        assert calls[0] == (1, 2), f"first report off: {calls}"
+        assert calls[-1] == (2, 2), calls[-1]
+        assert all(n <= t for n, t in calls), calls
+        assert [n for n, _ in calls] == sorted(n for n, _ in calls), (
+            "done must be monotonic"
+        )
+    finally:
+        shutil.rmtree(d)
+
+
+def test_place_fresh_target_skips_merge_callback():
+    # Renaming a folder into a free target slot is not a merge, so no
+    # progress callback should fire for it.
+    d = tempfile.mkdtemp()
+    try:
+        c = make_conn()
+        part = os.path.join(d, ".part")
+        final = os.path.join(d, "final")
+        os.makedirs(part)
+        open(os.path.join(part, "a.txt"), "w").write("a")
+        calls = []
+        c._place(part, final, on_merge=lambda n, t: calls.append((n, t)))
+        assert calls == [], "rename-into-place is not a merge"
+        assert open(os.path.join(final, "a.txt")).read() == "a"
+    finally:
+        shutil.rmtree(d)
+
+
 def test_place_file_atomic():
     d = tempfile.mkdtemp()
     try:
@@ -849,6 +908,8 @@ ALL_TESTS = (
     test_local_close_idempotent,
     test_local_friendly_error,
     test_merge_dir_preserves_extras,
+    test_merge_dir_reports_progress,
+    test_place_fresh_target_skips_merge_callback,
     test_place_file_atomic,
     test_place_dir_over_file,
     test_sweep_ignores_live_parts,

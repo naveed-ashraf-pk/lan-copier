@@ -1,28 +1,52 @@
 # AI Agent Quick Start: `lan-copier`
 
-For full architectural details, workflows, and conventions, read **`docs/architecture-and-developer-guide.md`**.
+Read **`docs/implementation-continuation-plan.md`** first (session handoff / current
+state), then **`docs/architecture-and-developer-guide.md`** for architecture and
+conventions. UI behavior and project layout live in `README.md` (in sync with the
+code — prefer it over this file for descriptive detail).
 
-> **Session handoff (READ FIRST in a fresh session):** `docs/implementation-continuation-plan.md` has the current state, intent, leftover work, and cleanup markers. `docs/code-review-handoff.md` documents everything done for a later detailed code review.
+## Commands
+- **Test**: `python3 tests.py` is the only test command. The root runner calls each
+  `tests/*.py` module's `ALL_TESTS`, then two AppWindow smoke tests. Add a test for
+  new behavior in the matching module and expose it via `ALL_TESTS`. No
+  lint/typecheck step is configured — plain asserts only.
+- **Fixtures**: `tests/common.py` has `FakePosixSsh` (an `SSHConnection` with
+  `kind="ssh"` driving real `sh -c`) — reuse it for engine/transport tests.
 
-## Key Quick Rules & Invariants
-- **Stack**: Python 3 standard library + PyGObject (`Gtk 3.0`). **No 3rd-party dependencies**.
-- **Test**: Run `python3 tests.py` (plain asserts; suite lives in `tests/`, one file per module, run by the root `tests.py` runner).
-- **Thread Safety**: Network and disk I/O run in background threads; **all UI updates must go through `GLib.idle_add`**.
-- **Model Columns**: Always use named constants (`COL_*` in `app/widgets/dirpane.py`). Never hardcode integer column indices.
-- **Sort Keys**: Raw sort key columns must use `GObject.TYPE_INT64` (64-bit) to avoid 2038 epoch/large file overflow.
-- **Sort Sync**: Never sync `Gtk.TREE_SORTABLE_UNSORTED_SORT_COLUMN_ID` across tree models (avoids GTK3 TreeModelSort segfault on subsequent inserts).
-- **Symlink Safety**: In local deletes, always check `os.path.islink()` *before* `os.path.isdir()`. In remote deletes over SSH, strip trailing slashes (`clean_path.rstrip("/")`) before `rm -rf --` so target folders are never traversed.
-- **Atomicity**: Transfers always write to PID-tagged `.lan-copier-part-*` files before atomic replacement (`os.replace`). Remote destinations stage into a same-directory part then `mv` (file) or per-entry merge (dir); Windows streams via bundled `tar.exe`.
-- **Connection picker**: every side connects / changes / disconnects **through its popup dialog** (`dialog.ConnectionDialog`), opened by the single per-side `conn_btn`; `EndpointBar` shows a display-only label (no dropdown, no separate edit/connect/disconnect buttons — one green-capable button). Each `EndpointBar` sits *inside* its own side column above the `DirPane` so the horizontal paned divider resizes bar + tree together; the DirPane filter/quick-select row is packed *above* the tree.
-- **Side swap (⇄)**: per-side session state is exactly the **(connection, current path, remembered profile) trio** in `AppWindow._swap_endpoints` — any new per-side field must be swapped there too. The ⇄ button sits in a strip on the inner edge of the dest column (rides with the paned divider); it swaps the two endpoint sessions wholesale (paths travel with their connection), confirms-and-clears when anything is checked, bumps `_remote_req`/`_dest_req` to drop in-flight listings, and disables while transfers/deletes run (`_transfer_or_delete_active`). Exports capture their connection into the context at snapshot time so a mid-export swap cannot reroute them.
-- **Status bar (per pane)**: each `DirPane`'s bottom `status_row` holds the left comparison-counts summary + a spinner + a right-aligned `right_label`. The window drives both: source shows `Selected: X (N files)` (green/red vs. the destination's free space) and destination shows `X / Y free` / `After copy: …` (or `Disk space unavailable`). Lazy folder sizes (`_start_folder_size_calc` in `app/window.py`, daemon threads + `BoundedSemaphore(2)` per side) fill the Size column on both panes; results are tagged with the side's `_remote_req`/`_dest_req` so navigation/swap/disconnect drop stale landings. `disk_space(path)` is part of the endpoint contract (local `shutil.disk_usage`; SSH `df`/`IO.DriveInfo` builders). Spec: `docs/disk-space-and-selection-hint.requirements.md`.
+## Architecture
+- **Transports are symmetric**: `LocalConnection` subclasses `SSHConnection`; both
+  implement the same endpoint contract (`list_dir`, `stat`/`tree`, `delete`, `exists`,
+  `size`, `unique_path`, `mkdir`, `rename`, `disk_space`, `key`). A new primitive must
+  exist on both.
+- **Remote paths**: on SSH endpoints, build/manipulate path strings with
+  `commands/paths.py` helpers (family-aware `join`/`dirname`/`basename`) — never the
+  control machine's `os.path` on a remote path (Windows `C:\…` splits wrong).
 
-## Symmetric Endpoints (any source → any destination)
-- **Transports**: `LocalConnection` and `SSHConnection` share a uniform endpoint contract (`list_dir`, `stat`/`stat_remote`, `tree`/`tree_remote`, `delete`, `exists`, `size`, `unique_path`, `mkdir`, `rename`, `disk_space`, `key()`); `LocalConnection` subclasses `SSHConnection`; `commands/local.py` owns the local fs helpers (re-exported by `local_transport` as `dir_list`/`dir_tree`/`delete_local_item`).
-- **UI (current)**: the clean reimplementation lives in `app/` — `app/window.py` (`AppWindow`, imported by `main.py`), `app/widgets/` (`endpoint.EndpointBar` merged single-row bar: display-only connection label + one popup-driven `conn_btn` (green `suggested-action` when connected) + path + nav + 📁/📂/⤓/🗑; `dialog.ConnectionDialog` popup — the single place to pick This computer / saved profile / new SSH and to disconnect; `dirpane.DirPane` tree with filter/quick-select row on top — every column header (Name/Size/Type/Modified/State) is click-sortable via `set_sort_column_id`; Size/Modified sort by the raw 64-bit `COL_SIZE`/`COL_MTIME` columns (never the human text) with folders always first), `app/profiles.py` (schema v3). The 📂 Open and 📁 pick-folder actions show only for a connected local endpoint (both sides); the pick-folder opens a local file chooser (`_choose_folder`) so users don't have to type paths. **Log coloring**: the Log tab colors lines by content — hard failures (`FAILED:`/`Error`) red, recoverable soft issues (`Could not`, `Retrying`, `Skipped`, non-zero `rc`) amber, everything else the default foreground; tags are `log_err`/`log_warn` created on the buffer in `_build_log_page`, chosen by `_log_tag` from the message text. The recursive compare action is **removed** (per-folder `classify_items` states and quick-select buttons remain). States: files compare by size; **directories compare by recursive `(bytes, files)`** — a same-named folder starts provisional `same` and flips to `differ` once both panes' lazy sizes land (`_reclassify_folder_state`); failed/partial size results keep `same` (never flip on an undercount; local `stat_remote` flags `partial`). Each side = one `EndpointBar` *inside* its side column above the `DirPane`, so the paned divider resizes bar + tree together; destination SSH routing uses `_dest_is_ssh()` (`dest_conn.kind == "ssh"`). Legacy `ui.py`/`panes.py`/`root profiles.py`/`tests/test_ui.py`/`app/connections.py`/`app/panels.py` are **deleted**, archived under `docs/old/legacy-ui/`. The suite is 100% on `app/` (`tests/test_app.py`).
+## Invariants
+- **Stack**: Python 3 stdlib + PyGObject (`Gtk 3.0`). No 3rd-party dependencies.
+- **Threading**: network/disk I/O runs in background threads; every UI update must
+  go through `GLib.idle_add`.
+- **Columns**: use the named `COL_*` constants in `app/widgets/dirpane.py`; never
+  hardcode integer column indices.
+- **Sort keys**: raw sort-key columns are `GObject.TYPE_INT64` (64-bit) to avoid
+  2038-epoch / large-file overflow.
+- **Sort sync**: never sync `Gtk.TREE_SORTABLE_UNSORTED_SORT_COLUMN_ID` across tree
+  models (GTK3 TreeModelSort segfault on subsequent inserts).
+- **Deletes**: check `os.path.islink()` before `os.path.isdir()` locally; strip
+  trailing slashes (`clean_path.rstrip("/")`) before remote `rm -rf --` so symlinked
+  targets are never traversed.
+- **Atomicity**: transfers write PID-tagged `.lan-copier-part-*` files before atomic
+  `os.replace`; remote destinations stage a same-directory part then `mv`/per-entry
+  merge.
+- **Progress**: a running transfer's bar never shows 100% until `_finish_transfer`
+  marks it done; the merge/placement phase drives `on_merge(done, total)` (local
+  dest only — remote placement is one opaque command).
+- **Side swap**: per-side session state is exactly the **(connection, current path,
+  remembered profile) trio** in `AppWindow._swap_endpoints` — any new per-side field
+  must be swapped there too.
 
-## Doc Maintenance
-- **Read first**: Start work on this codebase by reading **`docs/implementation-continuation-plan.md`** (handoff), then `docs/architecture-and-developer-guide.md`.
-- **Update with changes**: Any feature or behavioral/invariant change must update the docs briefly, in the same change.
-- **Flag gaps**: If exploration reveals something missing or conflicting with the doc, raise it so we can keep it accurate. When the doc and code diverge after your changes, prefer updating the doc over leaving stale text.
-- **Keep it lean**: Purpose is keep the doc updated for future AI work, and give AI agents a jump start. But same time we want to avoid clutter. So, prefer short precise edits over rewrites — the doc should stay concise, neat, and current.
+
+## Doc maintenance
+- Any feature/behavioral/invariant change updates the docs briefly, in the same
+  change (README for descriptive/UI facts, this file for invariants and commands).
+- If related docs and code diverge after your changes, update the doc rather than leaving stale text.

@@ -238,7 +238,7 @@ def test_replace_failure_cleans_part():
         scp_ok(c)
         orig = SSHConnection.__dict__["_place"]
         SSHConnection._place = staticmethod(
-            lambda p, f: (_ for _ in ()).throw(OSError("rename boom"))
+            lambda p, f, on_merge=None: (_ for _ in ()).throw(OSError("rename boom"))
         )
         try:
             try:

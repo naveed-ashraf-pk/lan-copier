@@ -1126,6 +1126,81 @@ def test_swap_partial_moves_single_connection():
         shutil.rmtree(dst, ignore_errors=True)
 
 
+def test_transfer_progress_cap_and_merging():
+    # A running transfer's bar is capped below 100% (it never claims done);
+    # the merging state freezes text/speed/ETA until finish marks it, and the
+    # bar stays capped while the merging… text reports per-entry placement.
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow, Transfer
+
+    win = None
+    try:
+        win = AppWindow()
+        t = Transfer("x.txt", "/a/x.txt", "/b/x.txt", win.batch)
+        t.id = win._next_id
+        win._next_id += 1
+        win._transfers.append(t)
+        win._by_id[t.id] = t
+        it = win.transfers_model.append(
+            [
+                t.id,
+                t.name,
+                "waiting…",
+                0,
+                "",
+                "",
+                "queued",
+                win._colors["queued"],
+                True,
+                None,
+                "",
+                "edit-delete",
+            ]
+        )
+        win._trow[t.id] = win.transfers_model.get_path(it)
+
+        t.status = "running"
+        t.method = "tar"
+        t.total = 100
+        t.current = 100
+        t.files = 5
+        t.files_done = 5
+        win._update_fraction(t)
+        row = win.transfers_model[win._trow[t.id]]
+        assert row[3] == 99, "running bar must be capped below 100"
+        assert "99%" in row[2], row[2]
+
+        win._set_merging(t)
+        assert t.merging
+        row = win.transfers_model[win._trow[t.id]]
+        assert row[2] == "merging…", row[2]
+        assert row[4] == "" and row[5] == "", "speed/ETA cleared during merge"
+
+        win._on_merge(t, 4, 5)
+        row = win.transfers_model[win._trow[t.id]]
+        assert row[2] == "merging… 4/5", row[2]
+
+        # the ticker must keep the bar capped without clobbering the text
+        win._update_fraction(t)
+        row = win.transfers_model[win._trow[t.id]]
+        assert row[2] == "merging… 4/5", row[2]
+        assert row[3] == 99, row[3]
+        win._update_progress(t, time.monotonic())
+        row = win.transfers_model[win._trow[t.id]]
+        assert row[4] == "" and row[5] == "", "no speed/ETA during merge"
+
+        win._finish_transfer(t, "done", "/b/x.txt")
+        assert not t.merging
+        row = win.transfers_model[win._trow[t.id]]
+        assert row[3] == 100, "completion shows a full bar"
+        assert row[2] == "done", row[2]
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+
+
 def test_swap_blocked_while_transfers_active():
     # The ⇄ button disables while transfers/deletes run (workers read the
     # sides' connections mid-flight), and clicking anyway is guarded.
@@ -1187,6 +1262,7 @@ ALL_TESTS = (
     test_swap_confirm_and_clear,
     test_swap_partial_moves_single_connection,
     test_swap_blocked_while_transfers_active,
+    test_transfer_progress_cap_and_merging,
 )
 
 
@@ -1368,6 +1444,12 @@ def _smoke_remote_dest():
         assert win._transfers, "no transfer enqueued"
         for t in win._transfers:
             assert t.status == "done", (t.name, t.status, t.err)
+            assert t.method == "tar", (
+                "SSH-destination transfers always stream (tar) so progress/ETA "
+                "take the streaming path",
+                t.name,
+                t.method,
+            )
         assert os.path.isfile(os.path.join(root, "file.txt")), (
             "file must land on remote dest"
         )

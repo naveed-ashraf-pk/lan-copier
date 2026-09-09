@@ -170,6 +170,7 @@ class Transfer:
         "procs",
         "paused",
         "removed",
+        "merging",
     )
 
     def __init__(self, name, src, dest, batch=0, is_dir=False):
@@ -197,6 +198,7 @@ class Transfer:
         self.procs = []
         self.paused = False
         self.removed = False
+        self.merging = False
 
 
 class AppWindow(Gtk.Window):
@@ -1950,10 +1952,16 @@ class AppWindow(Gtk.Window):
                 t.total = st["bytes"] if st else None
                 t.files = st["files"] if st else None
                 t.method = "tar" if t.is_dir else "scp"
-                if (
+                ssh_dest = (
                     t.dest_conn is not None
                     and getattr(t.dest_conn, "kind", None) == "ssh"
-                ):
+                )
+                if ssh_dest:
+                    # SSH destinations always stream (even single files), so
+                    # progress/ETA logic must use the tar path, not the local
+                    # part-file size probe.
+                    t.method = "tar"
+                if ssh_dest:
                     status, detail = transfer_engine.run(
                         t.dest_conn,
                         self.conn,
@@ -1978,6 +1986,9 @@ class AppWindow(Gtk.Window):
                         on_bytes=lambda b, f: GLib.idle_add(self._on_bytes, t, b, f),
                         proc_sink=t.procs,
                         on_finish=lambda: GLib.idle_add(self._set_merging, t),
+                        on_merge=lambda n, total: GLib.idle_add(
+                            self._on_merge, t, n, total
+                        ),
                     )
             except Exception as e:
                 status, detail = "failed", str(e)
@@ -2020,7 +2031,17 @@ class AppWindow(Gtk.Window):
     def _set_merging(self, t):
         if self._destroyed or t.removed:
             return False
+        t.merging = True
         self._set_cell(t, 2, "merging…")
+        self._set_cell(t, 4, "")
+        self._set_cell(t, 5, "")
+        return False
+
+    def _on_merge(self, t, done, total):
+        if self._destroyed or not t.merging:
+            return False
+        text = f"merging… {done}/{total}" if total else "merging…"
+        self._set_cell(t, 2, text)
         return False
 
     def _on_part(self, t, part):
@@ -2041,6 +2062,7 @@ class AppWindow(Gtk.Window):
         if self._destroyed:
             return False
         t.status = status
+        t.merging = False
         self._set_cell(t, 11, None)
         if status == "done":
             t.final = detail
@@ -2126,10 +2148,12 @@ class AppWindow(Gtk.Window):
             "final",
             "err",
             "method",
+            "merging",
         ):
             setattr(t, attr, None)
         t.status = "queued"
         t.current = 0
+        t.merging = False
         self._set_cell(t, 2, "waiting…")
         self._set_cell(t, 3, 0)
         self._set_cell(t, 4, "")
@@ -2217,14 +2241,22 @@ class AppWindow(Gtk.Window):
     def _update_fraction(self, t):
         if t.total:
             frac = min(t.current / t.total, 1.0)
-            text = f"{frac * 100:.0f}% ({human_size(t.current)}/{human_size(t.total)})"
-            if t.method == "tar" and t.files:
-                text += f" · file {t.files_done}/{t.files}"
-            self._set_cell(t, 2, text)
+            if t.status == "running":
+                # A running transfer is not done: never claim 100% until
+                # _finish_transfer marks it (a full bar means "finished").
+                frac = min(frac, 0.99)
+            if not t.merging:
+                text = (
+                    f"{frac * 100:.0f}% ({human_size(t.current)}/{human_size(t.total)})"
+                )
+                if t.method == "tar" and t.files:
+                    text += f" · file {t.files_done}/{t.files}"
+                self._set_cell(t, 2, text)
             self._set_cell(t, 3, max(0, int(frac * 100)))
         else:
             self._set_cell(t, 3, 0)
-            self._set_cell(t, 2, "working…")
+            if not t.merging:
+                self._set_cell(t, 2, "working…")
 
     def _update_progress(self, t, now):
         if t.method != "tar":
@@ -2235,6 +2267,10 @@ class AppWindow(Gtk.Window):
             except OSError:
                 return
         self._update_fraction(t)
+        if t.merging:
+            # Placement has no byte counter; the merging… text (and cleared
+            # speed/ETA) is authoritative until _finish_transfer runs.
+            return
         if t.last_t is None:
             t.last = t.current
             t.last_t = now

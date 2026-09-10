@@ -70,7 +70,9 @@ No `pip install` — zero third-party Python dependencies.
 - **Layout**: each side is one `EndpointBar` *inside* its side column, directly above
   its `DirPane`, so the horizontal paned divider resizes bar + tree together. The
   `DirPane` filter/quick-select row (Select: All / Missing / Changed / Same / Invert / Folders / Files)
-  sits above the tree.
+  sits above the tree. The bottom panel has two tabs: the combined **Selected — Transfers**
+  tab (selection list on the left, transfer progress on the right, side-by-side via a
+  horizontal drag divider at 40/60 default) and the **Log** tab (monospace text view).
 - **Connecting**: the `ConnectionDialog` popup is the single place to connect, change,
   or disconnect either side — This computer, a saved profile, or a new SSH endpoint.
   Each `EndpointBar` shows a display-only connection label plus one `conn_btn` that

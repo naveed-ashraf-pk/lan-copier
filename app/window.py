@@ -263,7 +263,7 @@ class AppWindow(Gtk.Window):
         }
 
         self._colors = DARK_COLORS if _is_dark_theme() else LIGHT_COLORS
-        self.transfers_page = None
+        self.combined_page = None
 
         self._build_ui()
         self._discover_later()
@@ -347,16 +347,27 @@ class AppWindow(Gtk.Window):
         side_paned.set_position(600)
 
         self.notebook = Gtk.Notebook()
-        self.sel_tab_lbl = Gtk.Label(label="Selected (0)")
-        self.notebook.append_page(self._build_selected_page(), self.sel_tab_lbl)
-        self.transfers_tab_lbl = Gtk.Label(label="Transfers (0)")
-        self.transfers_page = self._build_transfers_page()
-        self.notebook.append_page(self.transfers_page, self.transfers_tab_lbl)
+        self.combined_tab_lbl = Gtk.Label(label="Selected (0) — Transfers (0)")
+        selection_panel = self._build_selected_page()
+        transfers_panel = self._build_transfers_page()
+        selection_panel.set_border_width(4)
+        transfers_panel.set_border_width(4)
+        combined_hpaned = Gtk.Paned()
+        combined_hpaned.set_orientation(Gtk.Orientation.HORIZONTAL)
+        combined_hpaned.pack1(selection_panel, True, True)
+        combined_hpaned.pack2(transfers_panel, True, True)
+        self.combined_page = combined_hpaned
+        self.notebook.append_page(combined_hpaned, self.combined_tab_lbl)
         self.log_tab_lbl = Gtk.Label(label="Log")
         self.notebook.append_page(self._build_log_page(), self.log_tab_lbl)
 
+        # Horizontal drag handle: selection on left (40%), transfers on right
+        # (60%).  Seated on first layout — see _init_combined_hpaned.
+        self._combined_hpaned_set = False
+        combined_hpaned.connect("size-allocate", self._init_combined_hpaned)
+
         # Vertical drag handle: source/dest on top (absorbs all extra height),
-        # the bottom notebook (Selected / Transfers / Log) fixed-small by
+        # the bottom notebook (Selected+Transfers / Log) fixed-small by
         # default but resizable by dragging the divider.
         self.bottom_vpaned = Gtk.Paned()
         self.bottom_vpaned.set_orientation(Gtk.Orientation.VERTICAL)
@@ -365,16 +376,6 @@ class AppWindow(Gtk.Window):
         self._bottom_vpaned_set = False
         self.bottom_vpaned.connect("size-allocate", self._init_bottom_vpaned)
         browser.pack_start(self.bottom_vpaned, True, True, 0)
-        browser.pack_start(
-            Gtk.Label(
-                label="Colours: red=missing · orange=size differs · magenta=file/folder clash · "
-                "green=same · blue=destination only",
-                xalign=0,
-            ),
-            False,
-            False,
-            0,
-        )
 
         self.main_stack.add_named(browser, "browser")
         self.main_stack.add_named(self._build_delete_progress_page(), "delete_progress")
@@ -384,11 +385,27 @@ class AppWindow(Gtk.Window):
     def _init_bottom_vpaned(self, paned, alloc):
         """On first layout, seat the bottom divider at a percentage of the
         available height so the defaults scale with window size: the source/dest
-        area keeps ~70%, the bottom notebook (Selected/Transfers/Log) ~30%."""
+        area keeps ~70%, the bottom notebook (Selected+Transfers / Log) ~30%."""
         if self._bottom_vpaned_set or alloc.height <= 0:
             return
         self._bottom_vpaned_set = True
         paned.set_position(int(alloc.height * 0.70))
+
+    def _init_combined_hpaned(self, paned, alloc):
+        """On first layout, seat the horizontal divider inside the combined
+        tab at 40% so the selection panel gets 40% and the transfers panel
+        60% of the available width."""
+        if self._combined_hpaned_set or alloc.width <= 0:
+            return
+        self._combined_hpaned_set = True
+        paned.set_position(int(alloc.width * 0.40))
+
+    def _update_combined_label(self):
+        """Rebuild the combined tab label from the current selection count
+        and the number of active (non-terminal) transfers."""
+        n_sel = len(self.source_pane.selected)
+        n_active = len([x for x in self._transfers if x.status not in _TERMINAL])
+        self.combined_tab_lbl.set_text(f"Selected ({n_sel}) — Transfers ({n_active})")
 
     def _build_log_page(self):
         self.log = Gtk.TextView()
@@ -1206,7 +1223,7 @@ class AppWindow(Gtk.Window):
             self.sel_model.append([info["name"], path, self._dest_join(info["name"])])
         n = len(self.source_pane.selected)
         self.transfer_btn.set_label(f"▶ Transfer Selected ({n})")
-        self.sel_tab_lbl.set_text(f"Selected ({n})")
+        self._update_combined_label()
         self._update_delete_buttons()
         self._update_status_labels()
 
@@ -1968,13 +1985,8 @@ class AppWindow(Gtk.Window):
                 ]
             )
         )
-        self.transfers_tab_lbl.set_text(f"Transfers ({len(self._transfers)})")
+        self._update_combined_label()
         self._update_transfer_controls()
-        self.notebook.set_current_page(
-            self.notebook.page_num(self.transfers_page)
-            if hasattr(self, "transfers_page")
-            else 1
-        )
         threading.Thread(target=self._worker, args=(t,), daemon=True).start()
 
     def _policy(self):
@@ -2149,9 +2161,7 @@ class AppWindow(Gtk.Window):
         else:
             self._set_cell(t, 10, f"{status} — {t.name}")
         self.summary_lbl.set_text(f"{self.done} done · {self.failed} failed")
-        self.transfers_tab_lbl.set_text(
-            f"Transfers ({len([x for x in self._transfers if x.status not in _TERMINAL])})"
-        )
+        self._update_combined_label()
         self._update_transfer_controls()
         if status in ("done", "skipped", "failed"):
             self._schedule_dest_reload()
@@ -2232,7 +2242,7 @@ class AppWindow(Gtk.Window):
             self._by_id.pop(tid, None)
             self._trow.pop(tid, None)
         self._rebuild_trow()
-        self.transfers_tab_lbl.set_text(f"Transfers ({len(self._transfers)})")
+        self._update_combined_label()
         self._update_transfer_controls()
 
     def _rebuild_trow(self):
@@ -2406,7 +2416,7 @@ class AppWindow(Gtk.Window):
             self._by_id.pop(tid, None)
             self._trow.pop(tid, None)
         self._rebuild_trow()
-        self.transfers_tab_lbl.set_text(f"Transfers ({len(self._transfers)})")
+        self._update_combined_label()
         self._update_transfer_controls()
         self._log(f"Removed from list: {t.name}")
 

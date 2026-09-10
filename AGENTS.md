@@ -5,6 +5,12 @@ state), then **`docs/architecture-and-developer-guide.md`** for architecture and
 conventions. UI behavior and project layout live in `README.md` (in sync with the
 code — prefer it over this file for descriptive detail).
 
+## Role
+You are a senior software architect who actively identifies design, architecture, maintainability, scalability, and technical-debt issues.
+
+Do not assume that working code has optimal design. When modifying software, evaluate whether the existing design should be improved and address architectural flaws or technical debt when there is clear, practical benefit.
+
+
 ## Commands
 - **Test**: `python3 tests.py` is the only test command. The root runner calls each
   `tests/*.py` module's `ALL_TESTS`, then two AppWindow smoke tests. Add a test for

@@ -115,15 +115,19 @@ LIGHT_COLORS = {
     "cancelled": "#757575",
     "paused": "#f9a825",
 }
+# Dark themes use bright, fully-saturated luminous accents (Material A100/A200/
+# 300 family, matched in lightness/saturation). Kept light and vivid rather than
+# heavy-dim: the old saturated dim red (#ff5252) glared on dark backgrounds,
+# while crystallizing too far the other way (#e57373) looked washed-out gray-pink.
 DARK_COLORS = {
-    "missing": "#ff5252",
-    "differ": "#ffab40",
-    "conflict": "#ff4081",
-    "same": "#81c784",
+    "missing": "#FF6B6B",
+    "differ": "#ffb74d",
+    "conflict": "#ea80fc",
+    "same": "#69f0ae",
     "extra": "#40c4ff",
     "running": "#40c4ff",
-    "done": "#81c784",
-    "failed": "#ff5252",
+    "done": "#69f0ae",
+    "failed": "#FF6B6B",
     "queued": "#9e9e9e",
     "skipped": "#9e9e9e",
     "cancelled": "#9e9e9e",
@@ -993,7 +997,7 @@ class AppWindow(Gtk.Window):
         if side == "source":
             self._load_source(target)
         else:
-            self._load_dest(target)
+            self._load_dest(target, force_requery=(where == "refresh"))
 
     def _load_source(self, path):
         if self.conn is None:
@@ -1030,7 +1034,10 @@ class AppWindow(Gtk.Window):
         self._start_folder_size_calc("source")
         return False
 
-    def _load_dest(self, path=None):
+    def _load_dest(self, path=None, force_requery=False):
+        """Re-list the destination. `force_requery` makes the disk-space query
+        skip cache reuse (refresh / transfer / delete reloads must re-read
+        even when the current folder is a child of the cached path)."""
         target = path or (self.dest_bar.path_entry.get_text().strip() or "~")
         self._dest_req += 1
         req = self._dest_req
@@ -1043,11 +1050,11 @@ class AppWindow(Gtk.Window):
                     items = dir_list(target)
             except Exception as e:
                 items = None
-            GLib.idle_add(self._dest_loaded, req, target, items)
+            GLib.idle_add(self._dest_loaded, req, target, items, force_requery)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _dest_loaded(self, req, path, items):
+    def _dest_loaded(self, req, path, items, force_requery=False):
         if self._destroyed or req != self._dest_req:
             return False
         self.dest_current_path = path
@@ -1064,7 +1071,7 @@ class AppWindow(Gtk.Window):
         self._recompute_states()
         self._refresh_sel()
         self._start_folder_size_calc("dest")
-        self._dest_disk_space(req)
+        self._dest_disk_space(req, force_requery=force_requery)
         return False
 
     def _dest_is_ssh(self):
@@ -1423,10 +1430,14 @@ class AppWindow(Gtk.Window):
         except OSError:
             return False
 
-    def _dest_disk_space(self, req):
+    def _dest_disk_space(self, req, force_requery=False):
+        """Query dest free space. `force_requery` bypasses cache reuse so
+        refresh / transfer / delete reloads re-read even when the current
+        folder is a strict child of the cached path (drill-down reuse stays
+        for plain nav)."""
         if not self.dest_current_path:
             return
-        if self._reuse_disk_cache():
+        if not force_requery and self._reuse_disk_cache():
             return
         self._query_disk(req, self.dest_current_path)
 
@@ -1831,7 +1842,7 @@ class AppWindow(Gtk.Window):
         else:
             for p in done_paths:
                 self.dest_pane.selected.pop(p, None)
-            self._load_dest(self.dest_current_path)
+            self._load_dest(self.dest_current_path, force_requery=True)
         n_skip = total - len(done_paths) - len(errors)
         msg = f"Deletion finished: {len(done_paths)} deleted"
         if errors:
@@ -2128,7 +2139,7 @@ class AppWindow(Gtk.Window):
         if self._destroyed:
             return False
         if self.dest_current_path:
-            self._load_dest(self.dest_current_path)
+            self._load_dest(self.dest_current_path, force_requery=True)
         return False
 
     def _on_retry(self, t):

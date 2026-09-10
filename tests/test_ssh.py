@@ -312,6 +312,22 @@ def test_disk_space_parse():
     assert ds2 == {"total": 1048576 * 1024, "free": 638976 * 1024}, ds2
     assert "df -k" in calls[-1][-1]
 
+    # Windows PowerShell: one line "TOTAL FREE" in bytes
+    c._os_type = "Windows"
+
+    def windows_run(argv, timeout=None):
+        calls.append(argv)
+        return 0, "499963889664 312093204480\n", ""
+
+    c._run_cmd = windows_run
+    ds3 = c.disk_space("C:/some")
+    assert ds3 == {"total": 499963889664, "free": 312093204480}, ds3
+    assert "EncodedCommand" in calls[-1][-1]
+
+    # Windows garbage -> None
+    c._run_cmd = lambda argv, timeout=None: (0, "xx yy zz\n", "")
+    assert c.disk_space("C:/some") is None
+
     # failure -> None
     c._run_cmd = lambda argv, timeout=None: (1, "", "cannot access")
     assert c.disk_space("/tmp/some") is None

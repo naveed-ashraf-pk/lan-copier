@@ -608,6 +608,9 @@ class SSHConnection:
             return None
         parts = lines[-1].split()
         try:
+            if os_type == "Windows":
+                # PowerShell: one line "TOTAL FREE" in bytes
+                return {"total": int(parts[0]), "free": int(parts[1])}
             if os_type == "Darwin":
                 # df -k: [1]=1024-blocks total, [3]=available KB
                 return {"total": int(parts[1]) * 1024, "free": int(parts[3]) * 1024}

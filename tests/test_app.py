@@ -687,6 +687,123 @@ def test_disk_cache_reuse():
             win._on_destroy(None)
 
 
+def test_disk_requery_on_reload():
+    # Drill-down keeps the disk-space cache (no query), but the data-changing
+    # reloads — refresh button, transfer completion, delete completion — must
+    # force a fresh query even when the current folder is a child of the
+    # cached path (previously they silently reused the stale parent value).
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+
+    root = tempfile.mkdtemp(prefix="dsk-rer-")
+    sub = os.path.join(root, "sub")
+    os.makedirs(sub)
+
+    class SshStub:
+        kind = "ssh"
+        family = "posix"
+
+        def __init__(s):
+            s.calls = 0
+            s.free = 1000
+
+        def close(s):
+            pass
+
+        def disk_space(s, path):
+            s.calls += 1
+            return {"total": 5000, "free": s.free}
+
+        def list_dir(s, path):
+            return []
+
+        def expand_remote(s, p):
+            return str(p)
+
+        def home_dir(s):
+            return root
+
+    win = None
+    try:
+        win = AppWindow()
+        win.dest_conn = conn = SshStub()
+        win.dest_current_path = sub
+
+        def pump_until(pred, secs=8):
+            end = time.monotonic() + secs
+            while time.monotonic() < end and not pred():
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+            assert pred(), "condition not met in time"
+
+        def pump(secs=0.3):
+            end = time.monotonic() + secs
+            while time.monotonic() < end:
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+
+        def reset(free, calls=0):
+            conn.calls = calls
+            conn.free = free
+            win._disk_cache = {"path": root, "total": 5000, "free": 1000}
+
+        # T1: plain (non-forced) query from a child reuses the cache.
+        reset(900, calls=0)
+        win._dest_req += 1
+        win._dest_disk_space(win._dest_req)
+        pump()
+        assert conn.calls == 0 and win._disk_cache["free"] == 1000, (
+            "drill-down must reuse"
+        )
+
+        # T2: forced query bypasses reuse.
+        reset(900, calls=0)
+        win._dest_disk_space(win._dest_req, force_requery=True)
+        pump_until(lambda: conn.calls == 1)
+        pump_until(lambda: win._disk_cache["free"] == 900)
+        assert win._disk_cache["path"] == sub, "cache must move to the current folder"
+
+        # T3: _load_dest(force_requery=True) through the thread+idle path.
+        reset(800, calls=0)
+        win._load_dest(sub, force_requery=True)
+        pump_until(lambda: win._disk_cache and win._disk_cache["free"] == 800)
+        assert conn.calls == 1, "forced _load_dest must re-query"
+
+        # T4: refresh button while inside a child folder.
+        reset(700, calls=0)
+        win._on_navigate(win.dest_bar, "refresh")
+        pump_until(lambda: win._disk_cache and win._disk_cache["free"] == 700)
+        assert conn.calls == 1, "refresh must re-query"
+
+        # T5: delete completion while inside a child folder.
+        reset(600, calls=0)
+        win._delete_finished("dest", [], [], 0)
+        pump_until(lambda: win._disk_cache and win._disk_cache["free"] == 600)
+        assert conn.calls == 1, "delete must re-query"
+
+        # T6: transfer-completion reload (debounced).
+        reset(500, calls=0)
+        win._schedule_dest_reload()
+        pump_until(lambda: win._disk_cache and win._disk_cache["free"] == 500)
+        assert conn.calls == 1, "transfer reload must re-query"
+
+        # T7: control — plain _load_dest(child) still reuses (no query).
+        reset(400, calls=0)
+        win._load_dest(sub)
+        pump(0.4)
+        assert conn.calls == 0 and win._disk_cache["free"] == 1000, (
+            "plain drill-down must not re-query"
+        )
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_folder_size_in_model_window():
     # Lazy recursive folder sizes land in the model Size column via the window,
     # replacing the em-dash, and the spinner finishes hidden.
@@ -959,7 +1076,12 @@ def test_color_palettes():
     assert LIGHT_COLORS["running"] == "#1565c0"
     assert LIGHT_COLORS["queued"] == "#757575"
     assert LIGHT_COLORS["paused"] == "#f9a825"
-    assert DARK_COLORS["missing"] == "#ff5252"
+    assert DARK_COLORS["missing"] == "#FF6B6B"
+    assert DARK_COLORS["failed"] == "#FF6B6B"
+    assert DARK_COLORS["differ"] == "#ffb74d"
+    assert DARK_COLORS["conflict"] == "#ea80fc"
+    assert DARK_COLORS["same"] == "#69f0ae"
+    assert DARK_COLORS["done"] == "#69f0ae"
     assert DARK_COLORS["extra"] == "#40c4ff"
 
 
@@ -1253,6 +1375,7 @@ ALL_TESTS = (
     test_selection_hint_no_dest_color,
     test_dest_disk_label_failure,
     test_disk_cache_reuse,
+    test_disk_requery_on_reload,
     test_folder_size_in_model_window,
     test_folder_state_by_size,
     test_folder_state_failed_is_conservative,

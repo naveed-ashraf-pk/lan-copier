@@ -4,11 +4,14 @@
 
 ## Planned Improvements
 
+
 - **[UI] Redesign bottom panel layout** — Show the selection panel and transfer panel side by side (both visible simultaneously). Move logs to a separate tab.
 
 - **[Arch] Introduce state machine for `windows.py`** — Currently manages UI state with ad-hoc booleans (`self.removed`, etc.). A proper state machine would improve maintainability and reduce state-related bugs.
 
 ## Resolved
+
+- **[Feature] Disk space info for source** For source panel no disk space info. when no files selected show info when selected replace with what we show now (avoiding un necessary recalculation ).
 
 - ~~**[UI] Add "Select Same" button** — The selection toolbar has "Select All" and "Missing" options, but no way to select files that are *same* on both sides.~~
 

@@ -288,13 +288,16 @@ class DirPane(Gtk.Box):
     def set_summary(self, text):
         self.summary.set_text(text)
 
-    def set_right_label(self, text, color=None):
+    def set_right_label(self, text, color=None, tooltip=None):
         """Right-aligned status text. `color` (hex string) toggles a colored
-        pango span; otherwise plain text is used so no markup is interpreted."""
+        pango span; otherwise plain text is used so no markup is interpreted.
+        `tooltip` (optional) sets the label tooltip text."""
         if color:
             self.right_label.set_markup(f'<span foreground="{color}">{text}</span>')
         else:
             self.right_label.set_text(text)
+        if tooltip is not None:
+            self.right_label.set_tooltip_text(tooltip)
 
     def set_busy(self, active):
         """Show/hide the little in-flight spinner next to the right label."""

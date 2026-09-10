@@ -1,9 +1,9 @@
 # lan-copier — Implementation Plan + Session Handoff (compacted)
 
-**Date:** 2026-09-09 (session 9: transfer-panel progress fixes — 99%-until-done bar cap, working `merging…` state with per-entry merge progress, SSH-dest method normalization; sessions 5–8 history below)
+**Date:** 2026-09-10 (session 10: source-pane disk space + per-side disk-space refactor; sessions 5–9 history below)
 **Status:** clean reimplementation of the UI layer is DONE and green. Legacy `ui.py`/`panes.py`/`profiles.py`/`tests/test_ui.py` have been **deleted** and backed up under `docs/old/legacy-ui/`. **Session 5** fixed duplicate-profile stacking (identity is the resolved remote hostname, schema v3). **Session 6** simplified the bars: each side is a single `EndpointBar` row *inside* its own side column above the `DirPane` (a display-only endpoint label + one popup-driven `conn_btn` that turns green when connected — no dropdown/edit/disconnect buttons), the `ConnectionDialog` popup is now the single place to pick This computer / a saved profile / a new SSH connection and to disconnect, and the DirPane filter/quick-select row moved back **above** the tree. **Session 7** added the ⇄ side swap (endpoint sessions exchange wholesale, see §2.2d) and fixed the export worker to use its snapshot connection. **Session 8** added destination disk-space display + source selection-size hint + lazy folder sizes (see §2.2e; spec: `docs/disk-space-and-selection-hint.requirements.md`). This doc is the **single authoritative handoff**: read it in any new session, then `python3 tests.py` to verify the baseline. Everything below is self-contained.
 
-**Sibling docs:** `symmetric-endpoints-feature-plan.md` (original feature spec, §§1–15), `architecture-and-developer-guide.md`, `AGENTS.md`.
+**Sibling docs:** `symmetric-endpoints-feature-plan.md` (original feature spec, §§1–15), `architecture-and-developer-guide.md`, `disk-space-and-selection-hint.requirements.md` (dest-spec; the "source out of scope" lines are annotated SUPERSEDED), `source-disk-space.requirements.md` (this session's spec), `AGENTS.md`.
 
 ---
 
@@ -184,6 +184,15 @@ transport; the documented read-side accounting (`symmetric-endpoints-feature-pla
 - Open for real-host pass (§2.1): confirm whether the OS "wait or kill"
   prompt is purely a frozen-progress perception issue or a true main-thread stall
   (lifecycle tracing found no main-thread blocking in the transfer path).
+
+### 2.2h Session-10: source-pane disk space + per-side disk-space refactor (feature)
+
+Full spec: `docs/source-disk-space.requirements.md` (status → Implemented). Summary:
+
+- **Per-side disk-space state**: `self._disk_cache`/`self._disk_failed` (dest-only) replaced by `self._ds = {"source": {...}, "dest": {...}}` — computed display state, cleared on disconnect/swap (never swapped; the `_swap_endpoints` trio is untouched). `_query_disk`/`_disk_queried`/`_reuse_disk_cache`/`_dest_disk_space` generalized to side-aware `_query_disk_space(side,…)`/`_disk_space_queried(side,…)`/`_reuse_disk_cache(side)`/`_side_disk_space(side,…)` (conn via `_stat_conn`).
+- **Source disk space label**: the source right label shows `X / Y free` when nothing is selected (same format/color rules as dest: plain, no color; `Disk space unavailable`+amber log on failure; hidden while disconnected/no cache), and the existing selection hint when items are checked. `_update_source_hint` → `_update_source_label` + `_render_source_disk_space`; tooltip is now dynamic (`_SOURCE_DISK_TOOLTIP`/`_SOURCE_HINT_TOOLTIP`), `DirPane.set_right_label` gained an optional `tooltip` param.
+- **Lifecycle (avoid unnecessary recalculation)**: source `disk_space` is queried on connect/navigate/refresh/source-delete-complete via `_load_source(…, force_requery)` (`_source_loaded` mirrors `_dest_loaded`). Drill-down reuse per side (path-prefix + local `st_dev`). **Delete-complete forces a re-query** (`_delete_done` source branch, mirroring dest) so stale free space never survives a child-folder delete. **Transfers never re-query the source** (source listing isn't reloaded after transfers).
+- **Tests**: `test_source_disk_label_and_failure`, `test_source_disk_cache_reuse`, `test_source_disk_requery_and_no_transfer_query`, `test_swap_and_disconnect_clear_disk_state` (new); `test_selection_hint_and_dest_preview` updated deterministically (fakes override `disk_space` so async queries can't clobber injected values; uncheck now asserts the source disk label); all dest disk-space tests mechanically renamed (`_ds["dest"]`, `_side_disk_space("dest",…)`, `_reuse_disk_cache("dest")`).
 
 ### 2.3 Cleanup — DONE (session 4)
 Legacy `ui.py`, `panes.py`, root `profiles.py`, `tests/test_ui.py` deleted and archived under `docs/old/legacy-ui/` for reference. Remaining cleanup (only if desired, low priority): fold the `app/__init__.py` docstring to describe the package.

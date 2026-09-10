@@ -617,6 +617,10 @@ def test_selection_hint_and_dest_preview():
         win = AppWindow()
         win.conn = LocalConnection()
         win.dest_conn = LocalConnection()
+        # Deterministic disk-space for both panes so the async queries never
+        # clobber the injected values with real (unknown) disk numbers.
+        win.conn.disk_space = lambda path: {"total": 2048, "free": 1024}
+        win.dest_conn.disk_space = lambda path: {"total": 1000, "free": 100}
 
         def pump_until(pred, secs=20):
             end = time.monotonic() + secs
@@ -631,7 +635,7 @@ def test_selection_hint_and_dest_preview():
         pump_until(
             lambda: "a.txt" in win.source_pane.meta and win.dest_current_path == dst
         )
-        win._disk_cache = {"path": win.dest_current_path, "total": 1000, "free": 100}
+        pump_until(lambda: win._ds["source"]["cache"] and win._ds["dest"]["cache"])
 
         def check(pane, name, on=True):
             for i in range(len(pane.model)):
@@ -647,12 +651,19 @@ def test_selection_hint_and_dest_preview():
         assert win.dest_pane.right_label.get_use_markup()
 
         check(win.source_pane, "a.txt", on=False)
-        assert win.source_pane.right_label.get_text() == "", "hint hidden when empty"
+        assert win.source_pane.right_label.get_text() == "1.0 KB / 2 KB free", (
+            "source disk space shown when nothing selected"
+        )
+        assert not win.source_pane.right_label.get_use_markup(), "plain label, no color"
         assert win.dest_pane.right_label.get_text() == "100 B / 1000 B free"
         assert not win.dest_pane.right_label.get_use_markup(), "plain label, no color"
 
         # won't fit -> red, and the projected free space never goes negative
-        win._disk_cache = {"path": win.dest_current_path, "total": 1000, "free": 1}
+        win._ds["dest"]["cache"] = {
+            "path": win.dest_current_path,
+            "total": 1000,
+            "free": 1,
+        }
         check(win.source_pane, "a.txt", on=True)
         assert win.dest_pane.right_label.get_text() == "After copy: 0 B / 1000 B free"
         assert win._colors["failed"][1:] in win.dest_pane.right_label.get_label()
@@ -730,7 +741,7 @@ def test_dest_disk_label_failure():
             assert pred(), "condition not met in time"
 
         win._load_dest(dst)
-        pump_until(lambda: win._disk_failed)
+        pump_until(lambda: win._ds["dest"]["failed"])
         assert win.dest_pane.right_label.get_text() == "Disk space unavailable"
         buf = win.log.get_buffer()
         log = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
@@ -739,13 +750,238 @@ def test_dest_disk_label_failure():
         # a later successful query clears the failure state
         win.dest_conn.disk_space = lambda path: {"total": 2048, "free": 1024}
         win._load_dest(dst)
-        pump_until(lambda: win._disk_cache is not None)
-        assert not win._disk_failed
+        pump_until(lambda: win._ds["dest"]["cache"] is not None)
+        assert not win._ds["dest"]["failed"]
         assert win.dest_pane.right_label.get_text() == "1.0 KB / 2 KB free"
     finally:
         if win is not None:
             win._on_destroy(None)
         shutil.rmtree(dst, ignore_errors=True)
+
+
+def test_source_disk_label_and_failure():
+    # The source pane shows its own disk space (same format as the dest) when
+    # nothing is selected; a failed query shows "Disk space unavailable", is
+    # logged, and clears once a later query succeeds.
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+
+    src = tempfile.mkdtemp(prefix="src-dsk-")
+    win = None
+    try:
+        win = AppWindow()
+        win.conn = LocalConnection()
+
+        def pump_until(pred, secs=20):
+            end = time.monotonic() + secs
+            while time.monotonic() < end and not pred():
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+            assert pred(), "condition not met in time"
+
+        # failure first
+        win.conn.disk_space = lambda path: None
+        win._load_source(src)
+        pump_until(lambda: win._ds["source"]["failed"])
+        assert win.source_pane.right_label.get_text() == "Disk space unavailable"
+        buf = win.log.get_buffer()
+        log = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
+        assert "disk space" in log.lower(), log
+
+        # a later successful query clears the failure and shows the source label
+        win.conn.disk_space = lambda path: {"total": 2048, "free": 1024}
+        win._load_source(src)
+        pump_until(lambda: win._ds["source"]["cache"] is not None)
+        assert not win._ds["source"]["failed"]
+        assert win.source_pane.right_label.get_text() == "1.0 KB / 2 KB free"
+        assert not win.source_pane.right_label.get_use_markup(), (
+            "plain disk label has no color"
+        )
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+        shutil.rmtree(src, ignore_errors=True)
+
+
+def test_source_disk_cache_reuse():
+    # Drill-down navigation reuses the cached source disk space; local endpoints
+    # also verify they stay on the same device (st_dev).
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+
+    win = None
+    try:
+        win = AppWindow()
+        win.conn = type("S", (), {"kind": "ssh"})()
+        win._ds["source"]["cache"] = {"path": "/a/b", "total": 100, "free": 50}
+        win.current_path = "/a/b/c"
+        assert win._reuse_disk_cache("source"), "SSH child drill-down reuses"
+        win.current_path = "/a/b"
+        assert not win._reuse_disk_cache("source"), "same path re-queries"
+        win.current_path = "/a/x"
+        assert not win._reuse_disk_cache("source"), "non-child re-queries"
+
+        d = tempfile.mkdtemp(prefix="src-cache-")
+        try:
+            sub = os.path.join(d, "sub")
+            os.makedirs(sub)
+            win.conn = LocalConnection()
+            win._ds["source"]["cache"] = {"path": d, "total": 100, "free": 50}
+            win.current_path = sub
+            assert win._reuse_disk_cache("source"), "local child on same device reuses"
+            win.current_path = os.path.join(d, "nope")
+            assert not win._reuse_disk_cache("source"), "missing child re-queries"
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+
+
+def test_source_disk_requery_and_no_transfer_query():
+    # Source disk space is re-queried on refresh and source-side delete
+    # completion even inside a child folder — but transfer completion never
+    # touches the source (transfers only change the destination).
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+
+    root = tempfile.mkdtemp(prefix="src-rer-")
+    sub = os.path.join(root, "sub")
+    os.makedirs(sub)
+
+    class SshStub:
+        kind = "ssh"
+        family = "posix"
+
+        def __init__(s):
+            s.calls = 0
+            s.free = 1000
+
+        def close(s):
+            pass
+
+        def disk_space(s, path):
+            s.calls += 1
+            return {"total": 5000, "free": s.free}
+
+        def list_dir(s, path):
+            return []
+
+        def expand_remote(s, p):
+            return str(p)
+
+        def home_dir(s):
+            return root
+
+    win = None
+    try:
+        win = AppWindow()
+        win.conn = conn = SshStub()
+        win.dest_conn = dest_stub = SshStub()
+        win.current_path = sub
+        win.dest_current_path = sub
+
+        def pump_until(pred, secs=8):
+            end = time.monotonic() + secs
+            while time.monotonic() < end and not pred():
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+            assert pred(), "condition not met in time"
+
+        def pump(secs=0.3):
+            end = time.monotonic() + secs
+            while time.monotonic() < end:
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                time.sleep(0.005)
+
+        def reset(free, calls=0):
+            conn.calls = calls
+            conn.free = free
+            win._ds["source"]["cache"] = {"path": root, "total": 5000, "free": 1000}
+
+        # refresh inside a child folder forces a re-query.
+        reset(700, calls=0)
+        win._on_navigate(win.source_bar, "refresh")
+        pump_until(lambda: win._ds["source"]["cache"]["free"] == 700)
+        assert conn.calls == 1, "refresh must re-query"
+        assert win._ds["source"]["cache"]["path"] == sub, (
+            "cache must move to the current folder"
+        )
+
+        # source-side delete completion forces a re-query.
+        reset(600, calls=0)
+        win._delete_finished("source", [], [], 0)
+        pump_until(lambda: win._ds["source"]["cache"]["free"] == 600)
+        assert conn.calls == 1, "delete must re-query"
+
+        # transfer completion reloads the destination, never the source.
+        reset(500, calls=0)
+        dest_stub.calls = 0
+        win._schedule_dest_reload()
+        pump_until(lambda: dest_stub.calls >= 1)
+        assert conn.calls == 0, "transfer reload must not re-query the source"
+
+        # control: plain load from a child reuses (no query).
+        reset(400, calls=0)
+        win._load_source(sub)
+        pump(0.4)
+        assert conn.calls == 0 and win._ds["source"]["cache"]["free"] == 1000, (
+            "plain drill-down must not re-query"
+        )
+    finally:
+        if win is not None:
+            win._on_destroy(None)
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_swap_and_disconnect_clear_disk_state():
+    # Computed disk-space caches are per-side display state (never swapped):
+    # a swap clears both sides so stale values can't poison the new endpoints,
+    # and disconnecting a side clears that side's entry.
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.window import AppWindow
+    from local_transport import LocalConnection
+
+    win = None
+    try:
+        win = AppWindow()
+        win._ds["source"] = {
+            "cache": {"path": "/a", "total": 1, "free": 1},
+            "failed": False,
+        }
+        win._ds["dest"] = {
+            "cache": {"path": "/z", "total": 1, "free": 1},
+            "failed": True,
+        }
+        win._on_swap_sides()
+        assert win._ds["source"]["cache"] is None, "swap clears source cache"
+        assert win._ds["dest"]["cache"] is None, "swap clears dest cache"
+        assert not win._ds["dest"]["failed"], "swap clears dest failure flag"
+
+        win._ds["source"] = {
+            "cache": {"path": "/a", "total": 1, "free": 1},
+            "failed": True,
+        }
+        win.conn = LocalConnection()
+        win._on_disconnect(win.source_bar)
+        assert win._ds["source"]["cache"] is None, "disconnect clears source cache"
+        assert not win._ds["source"]["failed"], "disconnect clears source failure flag"
+    finally:
+        if win is not None:
+            win._on_destroy(None)
 
 
 def test_disk_cache_reuse():
@@ -762,24 +998,24 @@ def test_disk_cache_reuse():
     try:
         win = AppWindow()
         win.dest_conn = type("S", (), {"kind": "ssh"})()
-        win._disk_cache = {"path": "/a/b", "total": 100, "free": 50}
+        win._ds["dest"]["cache"] = {"path": "/a/b", "total": 100, "free": 50}
         win.dest_current_path = "/a/b/c"
-        assert win._reuse_disk_cache(), "SSH child drill-down reuses"
+        assert win._reuse_disk_cache("dest"), "SSH child drill-down reuses"
         win.dest_current_path = "/a/b"
-        assert not win._reuse_disk_cache(), "same path re-queries"
+        assert not win._reuse_disk_cache("dest"), "same path re-queries"
         win.dest_current_path = "/a/x"
-        assert not win._reuse_disk_cache(), "non-child re-queries"
+        assert not win._reuse_disk_cache("dest"), "non-child re-queries"
 
         d = tempfile.mkdtemp(prefix="dsk-cache-")
         try:
             sub = os.path.join(d, "sub")
             os.makedirs(sub)
             win.dest_conn = LocalConnection()
-            win._disk_cache = {"path": d, "total": 100, "free": 50}
+            win._ds["dest"]["cache"] = {"path": d, "total": 100, "free": 50}
             win.dest_current_path = sub
-            assert win._reuse_disk_cache(), "local child on same device reuses"
+            assert win._reuse_disk_cache("dest"), "local child on same device reuses"
             win.dest_current_path = os.path.join(d, "nope")
-            assert not win._reuse_disk_cache(), "missing child re-queries"
+            assert not win._reuse_disk_cache("dest"), "missing child re-queries"
         finally:
             shutil.rmtree(d, ignore_errors=True)
     finally:
@@ -849,53 +1085,63 @@ def test_disk_requery_on_reload():
         def reset(free, calls=0):
             conn.calls = calls
             conn.free = free
-            win._disk_cache = {"path": root, "total": 5000, "free": 1000}
+            win._ds["dest"]["cache"] = {"path": root, "total": 5000, "free": 1000}
 
         # T1: plain (non-forced) query from a child reuses the cache.
         reset(900, calls=0)
         win._dest_req += 1
-        win._dest_disk_space(win._dest_req)
+        win._side_disk_space("dest", win._dest_req)
         pump()
-        assert conn.calls == 0 and win._disk_cache["free"] == 1000, (
+        assert conn.calls == 0 and win._ds["dest"]["cache"]["free"] == 1000, (
             "drill-down must reuse"
         )
 
         # T2: forced query bypasses reuse.
         reset(900, calls=0)
-        win._dest_disk_space(win._dest_req, force_requery=True)
+        win._side_disk_space("dest", win._dest_req, force_requery=True)
         pump_until(lambda: conn.calls == 1)
-        pump_until(lambda: win._disk_cache["free"] == 900)
-        assert win._disk_cache["path"] == sub, "cache must move to the current folder"
+        pump_until(lambda: win._ds["dest"]["cache"]["free"] == 900)
+        assert win._ds["dest"]["cache"]["path"] == sub, (
+            "cache must move to the current folder"
+        )
 
         # T3: _load_dest(force_requery=True) through the thread+idle path.
         reset(800, calls=0)
         win._load_dest(sub, force_requery=True)
-        pump_until(lambda: win._disk_cache and win._disk_cache["free"] == 800)
+        pump_until(
+            lambda: win._ds["dest"]["cache"] and win._ds["dest"]["cache"]["free"] == 800
+        )
         assert conn.calls == 1, "forced _load_dest must re-query"
 
         # T4: refresh button while inside a child folder.
         reset(700, calls=0)
         win._on_navigate(win.dest_bar, "refresh")
-        pump_until(lambda: win._disk_cache and win._disk_cache["free"] == 700)
+        pump_until(
+            lambda: win._ds["dest"]["cache"] and win._ds["dest"]["cache"]["free"] == 700
+        )
         assert conn.calls == 1, "refresh must re-query"
 
         # T5: delete completion while inside a child folder.
         reset(600, calls=0)
         win._delete_finished("dest", [], [], 0)
-        pump_until(lambda: win._disk_cache and win._disk_cache["free"] == 600)
+        pump_until(
+            lambda: win._ds["dest"]["cache"] and win._ds["dest"]["cache"]["free"] == 600
+        )
         assert conn.calls == 1, "delete must re-query"
 
         # T6: transfer-completion reload (debounced).
         reset(500, calls=0)
         win._schedule_dest_reload()
-        pump_until(lambda: win._disk_cache and win._disk_cache["free"] == 500)
+        pump_until(
+            lambda: win._ds["dest"]["cache"] and win._ds["dest"]["cache"]["free"] == 500
+        )
         assert conn.calls == 1, "transfer reload must re-query"
 
         # T7: control — plain _load_dest(child) still reuses (no query).
         reset(400, calls=0)
         win._load_dest(sub)
         pump(0.4)
-        assert conn.calls == 0 and win._disk_cache["free"] == 1000, (
+        assert conn.calls == 0 and win._ds["dest"]["cache"]["free"] == 1000, (
             "plain drill-down must not re-query"
         )
     finally:
@@ -1127,7 +1373,7 @@ def test_net_conflict_accounting():
         win._load_source(src)
         win._load_dest(dst)
         pump_until(lambda: win.source_pane.meta and win.dest_pane.meta)
-        win._disk_cache = {
+        win._ds["dest"]["cache"] = {
             "path": win.dest_current_path,
             "total": 200 * 1024**3,
             "free": 100 * M,
@@ -1476,6 +1722,10 @@ ALL_TESTS = (
     test_selection_hint_and_dest_preview,
     test_selection_hint_no_dest_color,
     test_dest_disk_label_failure,
+    test_source_disk_label_and_failure,
+    test_source_disk_cache_reuse,
+    test_source_disk_requery_and_no_transfer_query,
+    test_swap_and_disconnect_clear_disk_state,
     test_disk_cache_reuse,
     test_disk_requery_on_reload,
     test_folder_size_in_model_window,

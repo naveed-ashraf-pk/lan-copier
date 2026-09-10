@@ -135,6 +135,11 @@ DARK_COLORS = {
 }
 _TERMINAL = ("done", "skipped", "failed", "cancelled")
 
+_SOURCE_DISK_TOOLTIP = "Free space on the source filesystem"
+_SOURCE_HINT_TOOLTIP = (
+    "Total size of selected items; green = fits in the destination, red = does not"
+)
+
 
 def _is_dark_theme():
     try:
@@ -245,8 +250,12 @@ class AppWindow(Gtk.Window):
         self._active_dialog = None
         self._hosts = []
 
-        self._disk_cache = None  # {"path","total","free"} for the dest pane
-        self._disk_failed = False
+        # Per-side disk space: cache {"path","total","free"} + a failure flag.
+        # Computed display state (never swapped — cleared on swap/disconnect).
+        self._ds = {
+            "source": {"cache": None, "failed": False},
+            "dest": {"cache": None, "failed": False},
+        }
         self._pending_sizes = {"source": 0, "dest": 0}
         self._size_sem = {
             "source": threading.BoundedSemaphore(2),
@@ -310,10 +319,6 @@ class AppWindow(Gtk.Window):
         )
         self.source_pane.set_state_colors(self._colors)
         self.dest_pane.set_state_colors(self._colors)
-        self.source_pane.right_label.set_tooltip_text(
-            "Total size of selected items; green = fits in the destination, "
-            "red = does not"
-        )
         self.dest_pane.right_label.set_tooltip_text(
             "Destination free space; after selecting source items it previews "
             "the space left after the copy"
@@ -835,6 +840,7 @@ class AppWindow(Gtk.Window):
             self.conn = None
             self.current_path = None
             self._remote_req += 1
+            self._ds["source"] = {"cache": None, "failed": False}
             self.source_pane.clear()
             self.source_pane.set_controls_visible(False)
             if self.dest_conn is None:
@@ -843,8 +849,7 @@ class AppWindow(Gtk.Window):
             self.dest_conn = None
             self.dest_current_path = None
             self._dest_req += 1
-            self._disk_cache = None
-            self._disk_failed = False
+            self._ds["dest"] = {"cache": None, "failed": False}
             self.dest_pane.clear()
             self.dest_pane.set_controls_visible(False)
         bar.set_disconnected()
@@ -888,8 +893,8 @@ class AppWindow(Gtk.Window):
         self._remote_req += 1
         self._dest_req += 1
         self._swap_endpoints()
-        self._disk_cache = None
-        self._disk_failed = False
+        self._ds["source"] = {"cache": None, "failed": False}
+        self._ds["dest"] = {"cache": None, "failed": False}
         self.source_pane.clear()
         self.dest_pane.clear()
         self._rebind_side("source")
@@ -995,11 +1000,14 @@ class AppWindow(Gtk.Window):
         if target is None:
             return
         if side == "source":
-            self._load_source(target)
+            self._load_source(target, force_requery=(where == "refresh"))
         else:
             self._load_dest(target, force_requery=(where == "refresh"))
 
-    def _load_source(self, path):
+    def _load_source(self, path, force_requery=False):
+        """Re-list the source. `force_requery` makes the disk-space query skip
+        cache reuse (refresh / delete reloads must re-read even when the
+        current folder is a child of the cached path)."""
         if self.conn is None:
             return
         self._remote_req += 1
@@ -1012,11 +1020,11 @@ class AppWindow(Gtk.Window):
                 items = None
                 if hasattr(self.conn, "last_error"):
                     self.conn.last_error = str(e)
-            GLib.idle_add(self._source_loaded, req, path, items)
+            GLib.idle_add(self._source_loaded, req, path, items, force_requery)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _source_loaded(self, req, path, items):
+    def _source_loaded(self, req, path, items, force_requery=False):
         if self._destroyed or req != self._remote_req:
             return False
         self.current_path = path
@@ -1032,6 +1040,7 @@ class AppWindow(Gtk.Window):
         self._recompute_states()
         self._refresh_sel()
         self._start_folder_size_calc("source")
+        self._side_disk_space("source", req, force_requery=force_requery)
         return False
 
     def _load_dest(self, path=None, force_requery=False):
@@ -1071,7 +1080,7 @@ class AppWindow(Gtk.Window):
         self._recompute_states()
         self._refresh_sel()
         self._start_folder_size_calc("dest")
-        self._dest_disk_space(req, force_requery=force_requery)
+        self._side_disk_space("dest", req, force_requery=force_requery)
         return False
 
     def _dest_is_ssh(self):
@@ -1364,37 +1373,54 @@ class AppWindow(Gtk.Window):
         return src_total, net, complete
 
     def _update_status_labels(self):
-        self._update_source_hint()
+        self._update_source_label()
         self._update_dest_space()
 
-    def _update_source_hint(self):
+    def _update_source_label(self):
         pane = self.source_pane
         if not pane.selected:
-            pane.set_right_label("")
+            self._render_source_disk_space(pane)
             return
         src_total, net, complete = self._selection_totals()
         count = len(pane.selected)
         prefix = "~" if not complete else ""
         text = f"Selected: {prefix}{human_size(src_total)} ({count} files)"
         color = None
-        if complete and self._disk_cache is not None and not self._disk_failed:
+        dcache = self._ds["dest"]["cache"]
+        if complete and dcache is not None and not self._ds["dest"]["failed"]:
             color = (
                 self._colors["done"]
-                if net <= self._disk_cache["free"]
+                if net <= dcache["free"]
                 else self._colors["failed"]
             )
-        pane.set_right_label(text, color=color)
+        pane.set_right_label(text, color=color, tooltip=_SOURCE_HINT_TOOLTIP)
+
+    def _render_source_disk_space(self, pane):
+        st = self._ds["source"]
+        if st["failed"]:
+            pane.set_right_label("Disk space unavailable", tooltip=_SOURCE_DISK_TOOLTIP)
+            return
+        cache = st["cache"]
+        if cache is None:
+            pane.set_right_label("", tooltip=_SOURCE_DISK_TOOLTIP)
+            return
+        pane.set_right_label(
+            f"{human_size(cache['free'])} / {human_size_compact(cache['total'])} free",
+            tooltip=_SOURCE_DISK_TOOLTIP,
+        )
 
     def _update_dest_space(self):
         pane = self.dest_pane
-        if self._disk_failed:
+        st = self._ds["dest"]
+        if st["failed"]:
             pane.set_right_label("Disk space unavailable")
             return
-        if self._disk_cache is None:
+        cache = st["cache"]
+        if cache is None:
             pane.set_right_label("")
             return
-        total = self._disk_cache["total"]
-        free = self._disk_cache["free"]
+        total = cache["total"]
+        free = cache["free"]
         if not self.source_pane.selected:
             pane.set_right_label(
                 f"{human_size(free)} / {human_size_compact(total)} free"
@@ -1412,63 +1438,69 @@ class AppWindow(Gtk.Window):
             color=color,
         )
 
-    def _reuse_disk_cache(self):
-        """True when drill-down navigation can reuse the cached dest disk space
-        (strict child of the cached path; local additionally requires the same
-        device). Same-path reloads (refresh / transfer / delete / connect)
+    def _reuse_disk_cache(self, side):
+        """True when drill-down navigation can reuse the cached disk space for
+        `side` (strict child of the cached path; local additionally requires the
+        same device). Same-path reloads (refresh / transfer / delete / connect)
         always re-query so free space reflects the real current state."""
-        cache = self._disk_cache
+        cache = self._ds[side]["cache"]
         if not cache:
             return False
-        cpath, cur = cache["path"], self.dest_current_path
-        if cur == cpath or not cur.startswith(cpath.rstrip("/") + "/"):
+        cur = self.current_path if side == "source" else self.dest_current_path
+        cpath = cache["path"]
+        if cur == cpath or not (cur or "").startswith(cpath.rstrip("/") + "/"):
             return False
-        if self._dest_is_ssh():
+        conn = self._stat_conn(side)
+        if conn is not None and getattr(conn, "kind", None) == "ssh":
             return True
         try:
             return os.stat(cur).st_dev == os.stat(cpath).st_dev
         except OSError:
             return False
 
-    def _dest_disk_space(self, req, force_requery=False):
-        """Query dest free space. `force_requery` bypasses cache reuse so
+    def _side_disk_space(self, side, req, force_requery=False):
+        """Query one side's free space. `force_requery` bypasses cache reuse so
         refresh / transfer / delete reloads re-read even when the current
         folder is a strict child of the cached path (drill-down reuse stays
         for plain nav)."""
-        if not self.dest_current_path:
+        cur = self.current_path if side == "source" else self.dest_current_path
+        if not cur:
             return
-        if not force_requery and self._reuse_disk_cache():
+        if not force_requery and self._reuse_disk_cache(side):
             return
-        self._query_disk(req, self.dest_current_path)
+        self._query_disk_space(side, req, cur)
 
-    def _query_disk(self, req, path):
+    def _query_disk_space(self, side, req, path):
         def work():
             try:
-                if self.dest_conn is not None:
-                    ds = self.dest_conn.disk_space(path)
+                conn = self._stat_conn(side)
+                if conn is not None:
+                    ds = conn.disk_space(path)
                 else:
                     ds = local_cmd.disk_space(path)
             except Exception:
                 ds = None
-            GLib.idle_add(self._disk_queried, req, ds)
+            GLib.idle_add(self._disk_space_queried, side, req, ds)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _disk_queried(self, req, ds):
+    def _disk_space_queried(self, side, req, ds):
         if self._destroyed:
             return False
-        if req != self._dest_req:
+        cur_req = self._remote_req if side == "source" else self._dest_req
+        if req != cur_req:
             return False
+        cur = self.current_path if side == "source" else self.dest_current_path
         if ds is None:
-            self._disk_failed = True
-            self._log(f'Could not read disk space for "{self.dest_current_path}"')
+            self._ds[side]["failed"] = True
+            self._log(f'Could not read disk space for "{cur}"')
         else:
-            self._disk_cache = {
-                "path": self.dest_current_path,
+            self._ds[side]["cache"] = {
+                "path": cur,
                 "total": ds["total"],
                 "free": ds["free"],
             }
-            self._disk_failed = False
+            self._ds[side]["failed"] = False
         self._update_status_labels()
         return False
 
@@ -1838,7 +1870,7 @@ class AppWindow(Gtk.Window):
             for p in done_paths:
                 self.source_pane.selected.pop(p, None)
             self._refresh_sel()
-            self._load_source(self.current_path)
+            self._load_source(self.current_path, force_requery=True)
         else:
             for p in done_paths:
                 self.dest_pane.selected.pop(p, None)

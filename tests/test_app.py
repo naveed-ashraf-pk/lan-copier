@@ -459,6 +459,106 @@ def test_dirpane_status_row():
     assert human_size_compact(1234) == "1.2 KB"
 
 
+def test_dirpane_select_same_button():
+    # The "Same" button must check only rows whose state is "same" and leave
+    # all others untouched.
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.widgets.dirpane import DirPane, COL_CHECK, COL_NAME
+
+    pane = DirPane(callbacks={})
+    pane.set_items(
+        [
+            {"name": "a.bin", "is_dir": False, "size": 10},
+            {"name": "b.txt", "is_dir": False, "size": 5},
+            {"name": "fold", "is_dir": True, "size": 0},
+            {"name": "c.dat", "is_dir": False, "size": 20},
+        ],
+        "/x",
+    )
+    pane.set_states(
+        {
+            "a.bin": "same",
+            "b.txt": "missing",
+            "fold": "same",
+            "c.dat": "differ",
+        }
+    )
+
+    # Simulate clicking the "Same" button
+    pane.select_same_btn.emit("clicked")
+
+    checked = {
+        pane.model[i][COL_NAME]
+        for i in range(len(pane.model))
+        if pane.model[i][COL_CHECK]
+    }
+    assert checked == {"a.bin", "fold"}, f"only 'same' items checked, got {checked}"
+
+    # Clicking again must not duplicate or error (button only checks, never toggles)
+    pane.select_same_btn.emit("clicked")
+    checked2 = {
+        pane.model[i][COL_NAME]
+        for i in range(len(pane.model))
+        if pane.model[i][COL_CHECK]
+    }
+    assert checked2 == {"a.bin", "fold"}
+
+
+def test_dirpane_select_all_label_and_sync():
+    # The "Select:" toggle shows the next action — "All" (nothing selected) or
+    # "None" (everything selected) — and stays truthful after manual checkbox
+    # edits, so clicking it can never do the opposite of its label.
+    Gtk = _gtk()
+    if Gtk is None:
+        return
+    from app.widgets.dirpane import DirPane
+
+    pane = DirPane(callbacks={})
+    pane.set_items(
+        [
+            {"name": "a.bin", "is_dir": False, "size": 10},
+            {"name": "b.txt", "is_dir": False, "size": 5},
+        ],
+        "/x",
+    )
+
+    # fresh pane: nothing selected -> label "All", toggle off
+    assert not pane.select_all_btn.get_active()
+    assert pane.select_all_btn.get_label() == "All"
+
+    # select all -> label flips to "None"
+    pane.select_all_btn.set_active(True)
+    assert pane.select_all_btn.get_label() == "None"
+    assert pane.select_all_btn.get_active()
+    assert all(r[0] for r in pane.model)
+
+    # manual uncheck of one row syncs the toggle + label back to "All"
+    pane._on_toggled(None, Gtk.TreePath.new_from_string("0"))
+    assert not pane.select_all_btn.get_active()
+    assert pane.select_all_btn.get_label() == "All"
+
+    # manual re-check of that row flips it back to "None"
+    pane._on_toggled(None, Gtk.TreePath.new_from_string("0"))
+    assert pane.select_all_btn.get_active()
+    assert pane.select_all_btn.get_label() == "None"
+    assert all(r[0] for r in pane.model)
+
+    # clicking "None" (toggle off) deselects everything and label returns
+    pane.select_all_btn.set_active(False)
+    assert pane.select_all_btn.get_label() == "All"
+    assert not any(r[0] for r in pane.model)
+
+    # manually checking every row one by one turns the toggle on at the last
+    # one (inverted-footgun guard: clicking "All" can never deselect all)
+    pane._on_toggled(None, Gtk.TreePath.new_from_string("0"))
+    assert not pane.select_all_btn.get_active(), "one of two checked -> not all"
+    pane._on_toggled(None, Gtk.TreePath.new_from_string("1"))
+    assert pane.select_all_btn.get_active()
+    assert pane.select_all_btn.get_label() == "None"
+
+
 def test_dirpane_folder_size_update():
     Gtk = _gtk()
     if Gtk is None:
@@ -1370,6 +1470,8 @@ ALL_TESTS = (
     test_dirpane_sortable_columns,
     test_dirpane_sort_by_size_and_mtime,
     test_dirpane_status_row,
+    test_dirpane_select_same_button,
+    test_dirpane_select_all_label_and_sync,
     test_dirpane_folder_size_update,
     test_selection_hint_and_dest_preview,
     test_selection_hint_no_dest_color,

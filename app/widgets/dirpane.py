@@ -168,7 +168,12 @@ class DirPane(Gtk.Box):
         self.filter_entry.connect("changed", self._on_filter_changed)
         box.pack_start(self.filter_entry, True, True, 0)
 
-        self.select_all_btn = Gtk.ToggleButton(label="Select all")
+        box.pack_start(Gtk.Label(label="Select:"), False, False, 0)
+
+        self.select_all_btn = Gtk.ToggleButton(label="All")
+        self.select_all_btn.set_tooltip_text(
+            "Select or deselect every item in the listing (even hidden by the filter)"
+        )
         self.select_all_btn.connect("toggled", self._on_select_all)
         box.pack_start(self.select_all_btn, False, False, 0)
 
@@ -194,18 +199,30 @@ class DirPane(Gtk.Box):
         )
         box.pack_start(self.select_changed_btn, False, False, 0)
 
+        self.select_same_btn = Gtk.Button(label="Same")
+        self.select_same_btn.set_tooltip_text(
+            "Check items that are identical on both sides"
+        )
+        self.select_same_btn.connect(
+            "clicked",
+            lambda b: self._select_pred(lambda n: self.states.get(n) == "same"),
+        )
+        box.pack_start(self.select_same_btn, False, False, 0)
+
         self.invert_btn = Gtk.Button(label="Invert")
         self.invert_btn.set_tooltip_text("Flip checked/unchecked for visible items")
         self.invert_btn.connect("clicked", lambda b: self._on_invert())
         box.pack_start(self.invert_btn, False, False, 0)
 
         self.folders_btn = Gtk.Button(label="Folders")
+        self.folders_btn.set_tooltip_text("Check folders")
         self.folders_btn.connect(
             "clicked", lambda b: self._select_pred(self._is_dir_name)
         )
         box.pack_start(self.folders_btn, False, False, 0)
 
         self.files_btn = Gtk.Button(label="Files")
+        self.files_btn.set_tooltip_text("Check files")
         self.files_btn.connect(
             "clicked", lambda b: self._select_pred(lambda n: not self._is_dir_name(n))
         )
@@ -432,6 +449,7 @@ class DirPane(Gtk.Box):
     def _on_toggled(self, renderer, path):
         row = self.model[self._child_path(path)]
         self._check(row, not bool(row[COL_CHECK]))
+        self._sync_select_all()
 
     def _on_select_all(self, btn):
         on = bool(btn.get_active())
@@ -455,6 +473,7 @@ class DirPane(Gtk.Box):
                 self.select_all_btn.set_active(all_on)
             finally:
                 self.select_all_btn.handler_unblock_by_func(self._on_select_all)
+        self.select_all_btn.set_label("None" if all_on else "All")
 
     def _on_invert(self):
         for row in self._visible_rows():

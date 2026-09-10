@@ -69,7 +69,7 @@ No `pip install` — zero third-party Python dependencies.
 
 - **Layout**: each side is one `EndpointBar` *inside* its side column, directly above
   its `DirPane`, so the horizontal paned divider resizes bar + tree together. The
-  `DirPane` filter/quick-select row (Missing / Changed / Invert / Folders / Files)
+  `DirPane` filter/quick-select row (Select: All / Missing / Changed / Same / Invert / Folders / Files)
   sits above the tree.
 - **Connecting**: the `ConnectionDialog` popup is the single place to connect, change,
   or disconnect either side — This computer, a saved profile, or a new SSH endpoint.
